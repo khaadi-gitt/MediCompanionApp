@@ -41,3 +41,6 @@ backend/.env
 # generated native folders
 /ios
 /android
+
+database_pass.txt
+
