@@ -74,6 +74,8 @@ Deno.serve(async (req) => {
     const body = await req.json();
     const message = String(body?.message || '').trim();
     const history = Array.isArray(body?.history) ? body.history : [];
+    const sessionId = sanitizeUuid(body?.session_id);
+    const userId = sanitizeUuid(body?.user_id);
 
     if (!message) {
       return json({ error: 'Message is required.' }, 400);
@@ -159,6 +161,15 @@ Deno.serve(async (req) => {
     }
 
     const reply = forceEnglishOutput(rawReply);
+    if (sessionId) {
+      await saveChatMessages(sb, {
+        sessionId,
+        userId,
+        userMessage: message,
+        assistantReply: reply,
+      });
+    }
+
     return json({ blocked: false, reply });
   } catch (error) {
     return json({ error: error?.message || 'Unexpected error.' }, 500);
@@ -254,4 +265,38 @@ function forceEnglishOutput(text: string) {
 
   const body = cleaned || 'Please ask a medical question in clear terms.';
   return `${body}\n\n${englishDisclaimer}`;
+}
+
+function sanitizeUuid(value: unknown): string | null {
+  const s = String(value || '').trim();
+  if (!s) return null;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(s)) {
+    return null;
+  }
+  return s;
+}
+
+async function saveChatMessages(
+  sb: ReturnType<typeof createClient>,
+  payload: { sessionId: string; userId: string | null; userMessage: string; assistantReply: string },
+) {
+  const rows = [
+    {
+      session_id: payload.sessionId,
+      user_id: payload.userId,
+      role: 'user',
+      content: payload.userMessage,
+    },
+    {
+      session_id: payload.sessionId,
+      user_id: payload.userId,
+      role: 'assistant',
+      content: payload.assistantReply,
+    },
+  ];
+
+  const { error } = await sb.from('chat_messages').insert(rows);
+  if (error) {
+    console.error('chat_messages insert error', error.message);
+  }
 }

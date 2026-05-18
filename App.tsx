@@ -33,9 +33,25 @@ type ProfilePayload = {
   photoUrl: string;
 };
 
+type ChatMsg = {
+  id: string;
+  role: 'user' | 'assistant';
+  text: string;
+};
+
+type ChatSession = {
+  id: string;
+  title: string;
+  messages: ChatMsg[];
+  updatedAt: number;
+};
+
 export default function App() {
   const [screen, setScreen] = useState<Screen>('splash');
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [chatPrefill, setChatPrefill] = useState('');
+  const [chatSessionsByUser, setChatSessionsByUser] = useState<Record<string, ChatSession[]>>({});
+  const [activeChatSessionByUser, setActiveChatSessionByUser] = useState<Record<string, string | null>>({});
   const [authLoading, setAuthLoading] = useState(false);
   const [settings, setSettings] = useState<AppSettings>({
     darkMode: false,
@@ -59,9 +75,11 @@ export default function App() {
 
       const user = data.session?.user ?? null;
       if (user) {
+        setCurrentUserId(user.id);
         setProfile(getProfileFromUser(user));
         setScreen('home');
       } else {
+        setCurrentUserId(null);
         setScreen('login');
       }
     }, 1100);
@@ -71,7 +89,10 @@ export default function App() {
 
       const user = session?.user ?? null;
       if (user) {
+        setCurrentUserId(user.id);
         setProfile(getProfileFromUser(user));
+      } else {
+        setCurrentUserId(null);
       }
     });
 
@@ -106,6 +127,7 @@ export default function App() {
       }
 
       if (data.user) {
+        setCurrentUserId(data.user.id);
         setProfile(getProfileFromUser(data.user));
       }
       setScreen('home');
@@ -137,6 +159,7 @@ export default function App() {
       const session = data.session;
 
       if (user) {
+        setCurrentUserId(user.id);
         setProfile({
           fullName: payload.fullName,
           email: payload.email,
@@ -157,8 +180,100 @@ export default function App() {
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
+    setCurrentUserId(null);
     setScreen('login');
   };
+
+  const historyKey = currentUserId || 'guest';
+  const currentSessions = chatSessionsByUser[historyKey] || [];
+  const activeSessionId = activeChatSessionByUser[historyKey] || null;
+
+  const ensureActiveChatSession = () => {
+    const existing = activeChatSessionByUser[historyKey];
+    if (existing && currentSessions.some((s) => s.id === existing)) return existing;
+
+    const id = createUuid();
+    const next: ChatSession = {
+      id,
+      title: 'New Chat',
+      updatedAt: Date.now(),
+      messages: [
+        {
+          id: `m-${Date.now()}`,
+          role: 'assistant',
+          text: 'Hello! Ask any medical question and I will explain it in simple language.',
+        },
+      ],
+    };
+    setChatSessionsByUser((prev) => ({ ...prev, [historyKey]: [next, ...(prev[historyKey] || [])] }));
+    setActiveChatSessionByUser((prev) => ({ ...prev, [historyKey]: id }));
+    return id;
+  };
+
+  const handleAppendSessionMessage = (msg: ChatMsg) => {
+    const sid = ensureActiveChatSession();
+    setChatSessionsByUser((prev) => {
+      const list = prev[historyKey] || [];
+      const next = list.map((s) => {
+        if (s.id !== sid) return s;
+        const nextTitle =
+          s.title === 'New Chat' && msg.role === 'user'
+            ? msg.text.slice(0, 60)
+            : s.title;
+        return {
+          ...s,
+          title: nextTitle || s.title,
+          updatedAt: Date.now(),
+          messages: [...s.messages, msg],
+        };
+      });
+      return { ...prev, [historyKey]: next.sort((a, b) => b.updatedAt - a.updatedAt) };
+    });
+  };
+
+  const handleClearLocalHistory = () => {
+    setChatSessionsByUser((prev) => ({ ...prev, [historyKey]: [] }));
+    setActiveChatSessionByUser((prev) => ({ ...prev, [historyKey]: null }));
+  };
+
+  const handleOpenChatSession = (sessionId: string, prefill = '') => {
+    setActiveChatSessionByUser((prev) => ({ ...prev, [historyKey]: sessionId }));
+    setChatPrefill(prefill);
+    setScreen('chat');
+  };
+
+  const handleStartNewChat = (prefill = '') => {
+    const id = createUuid();
+    const next: ChatSession = {
+      id,
+      title: 'New Chat',
+      updatedAt: Date.now(),
+      messages: [
+        {
+          id: `m-${Date.now()}`,
+          role: 'assistant',
+          text: 'Hello! Ask any medical question and I will explain it in simple language.',
+        },
+      ],
+    };
+    setChatSessionsByUser((prev) => ({ ...prev, [historyKey]: [next, ...(prev[historyKey] || [])] }));
+    setActiveChatSessionByUser((prev) => ({ ...prev, [historyKey]: id }));
+    setChatPrefill(prefill);
+    setScreen('chat');
+  };
+
+  const handleOpenChat = (sessionId?: string, prefill = '') => {
+    if (sessionId) {
+      handleOpenChatSession(sessionId, prefill);
+      return;
+    }
+    handleStartNewChat(prefill);
+  };
+
+  const sessionForChat =
+    currentSessions.find((s) => s.id === (activeSessionId || '')) ||
+    currentSessions[0] ||
+    null;
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: settings.darkMode ? APP_BG_DARK : APP_BG_LIGHT }]}>
@@ -184,8 +299,7 @@ export default function App() {
           onGoHistory={() => setScreen('history')}
           onGoProfile={() => setScreen('profile')}
           onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+            handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
         />
@@ -196,8 +310,7 @@ export default function App() {
           onGoHistory={() => setScreen('history')}
           onGoProfile={() => setScreen('profile')}
           onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+            handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
         />
@@ -208,20 +321,20 @@ export default function App() {
           onGoHistory={() => setScreen('history')}
           onGoProfile={() => setScreen('profile')}
           onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+            handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
         />
       ) : screen === 'history' ? (
         <HistoryScreen
+          items={currentSessions.map((s) => ({ id: s.id, title: s.title }))}
           onBack={() => setScreen('home')}
           onGoHome={() => setScreen('home')}
           onGoProfile={() => setScreen('profile')}
-          onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+          onGoChat={(sessionId?: string) => {
+            handleOpenChat(sessionId);
           }}
+          onClearHistory={handleClearLocalHistory}
           onGoUpgrade={() => setScreen('upgrade')}
         />
       ) : screen === 'upgrade' ? (
@@ -231,8 +344,7 @@ export default function App() {
           onGoHistory={() => setScreen('history')}
           onGoProfile={() => setScreen('profile')}
           onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+            handleStartNewChat();
           }}
         />
       ) : screen === 'settings' ? (
@@ -242,8 +354,7 @@ export default function App() {
           onGoHistory={() => setScreen('history')}
           onGoProfile={() => setScreen('profile')}
           onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+            handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
           onGoLanguage={() => setScreen('settings_language')}
@@ -280,13 +391,26 @@ export default function App() {
           onGoDisclaimer={() => setScreen('disclaimer')}
           onGoUpgrade={() => setScreen('upgrade')}
           onGoChat={() => {
-            setChatPrefill('');
-            setScreen('chat');
+            handleStartNewChat();
           }}
           onLogout={handleLogout}
         />
       ) : screen === 'chat' ? (
-        <ChatScreen initialText={chatPrefill} onGoHome={() => setScreen('home')} />
+        <ChatScreen
+          userId={currentUserId}
+          sessionMessages={
+            sessionForChat?.messages || [
+              {
+                id: `m-${Date.now()}`,
+                role: 'assistant',
+                text: 'Hello! Ask any medical question and I will explain it in simple language.',
+              },
+            ]
+          }
+          initialText={chatPrefill}
+          onAppendMessage={handleAppendSessionMessage}
+          onGoHome={() => setScreen('home')}
+        />
       ) : screen === 'home' ? (
         <HomeScreen
           userName={profile.fullName}
@@ -298,8 +422,7 @@ export default function App() {
           onGoUpgrade={() => setScreen('upgrade')}
           onLogout={handleLogout}
           onGoChat={(text?: string) => {
-            setChatPrefill(text ?? '');
-            setScreen('chat');
+            handleStartNewChat(text ?? '');
           }}
         />
       ) : screen === 'login' ? (
@@ -318,6 +441,14 @@ export default function App() {
       )}
     </SafeAreaView>
   );
+}
+
+function createUuid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = Math.floor(Math.random() * 16);
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 function getBackTarget(current: Screen): Screen | null {

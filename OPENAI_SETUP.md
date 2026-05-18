@@ -46,3 +46,50 @@ curl -X POST http://localhost:5050/admin/config \
 - `openai_enabled=false` -> chat blocked message aayega.
 - `openai_enabled=true` + valid key -> chat normal chalegi.
 - Is se aap remotely ON/OFF control kar sakte hain.
+
+### 5) Fine-tuned model ko chat ke saath use karna
+Jab fine-tuning complete ho jaye aur aapko model id mile (example: `ft:gpt-4o-mini-2024-07-18:org:medicompanion:abc123`), to us model ko config me save karein:
+
+```bash
+curl -X POST http://localhost:5050/admin/config \
+  -H "Content-Type: application/json" \
+  -H "x-admin-secret: YOUR_ADMIN_SECRET" \
+  -d '{"openai_model":"ft:gpt-4o-mini-2024-07-18:org:medicompanion:abc123","openai_enabled":true}'
+```
+
+Is ke baad mobile chat automatically is new model se response lena start kar dega.
+
+### 6) Chat history save karna (Supabase)
+SQL Editor me `backend/sql/chat_history.sql` run karein, phir edge function redeploy karein:
+
+```bash
+supabase functions deploy medical-chat --no-verify-jwt
+```
+
+History screen ab `chat_messages` table se user-wise data read karegi.
+
+### 7) OpenAI ke bajaye apna local model (Ollama) use karna
+1. PC par Ollama install/run karein aur model pull karein:
+
+```bash
+ollama pull llama3.1:8b
+ollama serve
+```
+
+2. Supabase SQL Editor me updated `backend/sql/app_config.sql` run karein (new columns add hongi).
+3. Admin config me provider local set karein:
+
+```bash
+curl -X POST http://localhost:5050/admin/config \
+  -H "Content-Type: application/json" \
+  -H "x-admin-secret: YOUR_ADMIN_SECRET" \
+  -d '{"ai_provider":"local","openai_enabled":true,"openai_model":"llama3.1:8b","local_api_url":"http://127.0.0.1:11434"}'
+```
+
+4. Mobile app `.env` me backend base URL set karein:
+
+```env
+EXPO_PUBLIC_API_BASE_URL=http://YOUR_PC_LAN_IP:5050
+```
+
+Ab chat request backend `/api/chat` ko jayegi aur OpenAI ki bajaye local model use hoga.

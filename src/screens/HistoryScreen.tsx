@@ -1,26 +1,24 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useMemo } from 'react';
 import { Platform, Pressable, ScrollView, StatusBar as RNStatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { NavItem } from '../components/NavItem';
 
-const MOCK_HISTORY = [
-  'What are early symptoms of diabetes?',
-  'Explain hypertension in simple words',
-  'How to manage seasonal flu at home?',
-  'Difference between allergy and cold',
-];
-
 export function HistoryScreen({
+  items,
   onBack,
   onGoHome,
   onGoProfile,
   onGoChat,
+  onClearHistory,
   onGoUpgrade,
 }: {
+  items: { id: string; title: string }[];
   onBack: () => void;
   onGoHome: () => void;
   onGoProfile: () => void;
-  onGoChat: () => void;
+  onGoChat: (sessionId?: string) => void;
+  onClearHistory: () => void;
   onGoUpgrade: () => void;
 }) {
   const { width } = useWindowDimensions();
@@ -28,6 +26,10 @@ export function HistoryScreen({
   const contentWidth = Math.min(isDesktop ? 620 : 560, width - 20);
   const topInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) + 8 : 10;
   const bottomInset = Platform.OS === 'android' ? 18 : 10;
+
+  const latestSessionItems = useMemo(() => {
+    return items.slice(0, 30);
+  }, [items]);
 
   return (
     <View style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset }]}> 
@@ -37,17 +39,20 @@ export function HistoryScreen({
             <MaterialCommunityIcons name="arrow-left" size={24} color="#2AAFC0" />
           </Pressable>
           <Text style={styles.title}>History</Text>
-          <Pressable style={styles.topBtn}>
+          <Pressable style={styles.topBtn} onPress={onClearHistory}>
             <MaterialCommunityIcons name="delete-outline" size={22} color="#A5B2C1" />
           </Pressable>
         </View>
 
         <View style={styles.card}>
-          {MOCK_HISTORY.map((item) => (
-            <Pressable style={styles.row} key={item}>
+          {latestSessionItems.length === 0 ? (
+            <Text style={styles.emptyText}>No history yet. Start a chat to save history.</Text>
+          ) : null}
+          {latestSessionItems.map((item) => (
+            <Pressable style={styles.row} key={item.id} onPress={() => onGoChat(item.id)}>
               <View style={styles.rowLeft}>
                 <MaterialCommunityIcons name="history" size={18} color="#2CB7C5" />
-                <Text style={styles.rowText}>{item}</Text>
+                <Text style={styles.rowText}>{item.title}</Text>
               </View>
               <MaterialCommunityIcons name="chevron-right" size={20} color="#B0BDCC" />
             </Pressable>
@@ -58,7 +63,7 @@ export function HistoryScreen({
       <View style={[styles.bottomNav, { width: contentWidth, marginBottom: bottomInset }]}> 
         <NavItem label="Home" icon="home" onPress={onGoHome} />
         <NavItem label="History" icon="history" active />
-        <Pressable style={styles.centerBtn} onPress={onGoChat}>
+        <Pressable style={styles.centerBtn} onPress={() => onGoChat()}>
           <MaterialCommunityIcons name="chat-processing-outline" size={22} color="#FFFFFF" />
         </Pressable>
         <NavItem label="Profile" icon="account-outline" onPress={onGoProfile} />
@@ -114,6 +119,7 @@ const styles = StyleSheet.create({
     paddingRight: 8,
   },
   rowText: { color: '#2E3C52', fontSize: 13, fontWeight: '500', flexShrink: 1 },
+  emptyText: { color: '#6A7C92', fontSize: 13, paddingHorizontal: 4, paddingVertical: 8 },
   bottomNav: {
     marginTop: 8,
     backgroundColor: '#FFFFFF',

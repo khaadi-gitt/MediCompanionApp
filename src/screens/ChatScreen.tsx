@@ -1,7 +1,7 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useEffect, useRef, useState } from 'react';
 import {
-  Keyboard,
+  KeyboardAvoidingView,
   Platform,
   Pressable,
   ScrollView,
@@ -20,23 +20,32 @@ type ChatMsg = {
   text: string;
 };
 
-export function ChatScreen({ initialText, onGoHome }: { initialText: string; onGoHome: () => void }) {
+export function ChatScreen({
+  userId,
+  sessionMessages,
+  initialText,
+  onAppendMessage,
+  onGoHome,
+}: {
+  userId: string | null;
+  sessionMessages: ChatMsg[];
+  initialText: string;
+  onAppendMessage: (msg: ChatMsg) => void;
+  onGoHome: () => void;
+}) {
+  const backendApiBase = String(process.env.EXPO_PUBLIC_API_BASE_URL || '').trim();
   const { width } = useWindowDimensions();
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 760 : 560, width - 20);
-  const bottomSafe = Platform.OS === 'android' ? 28 : 10;
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const bottomSafe = Platform.OS === 'android' ? 0 : 10;
   const scrollRef = useRef<ScrollView>(null);
-  const lastAutoSentRef = useRef('');
   const [inputText, setInputText] = useState(initialText);
   const [isSending, setIsSending] = useState(false);
-  const [messages, setMessages] = useState<ChatMsg[]>([
-    {
-      id: 'm1',
-      role: 'assistant',
-      text: 'Hello! Ask any medical question and I will explain it in simple language.',
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMsg[]>(sessionMessages);
+
+  useEffect(() => {
+    setMessages(sessionMessages);
+  }, [sessionMessages]);
 
   const sendSpecificMessage = async (rawText: string) => {
     const text = rawText.trim();
@@ -46,73 +55,78 @@ export function ChatScreen({ initialText, onGoHome }: { initialText: string; onG
     const nextHistory = [...messages, userMsg];
 
     setMessages((prev) => [...prev, userMsg]);
+    onAppendMessage(userMsg);
     setInputText('');
 
     try {
       setIsSending(true);
-
-      const { data, error } = await supabase.functions.invoke('medical-chat', {
-        body: {
-          message: text,
-          history: nextHistory.slice(-8).map((m) => ({ role: m.role, text: m.text })),
-        },
-      });
-
-      if (error) throw error;
+      let data: any = null;
+      if (backendApiBase) {
+        const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: text,
+            history: nextHistory.slice(-8).map((m) => ({ role: m.role, text: m.text })),
+            user_id: userId,
+          }),
+        });
+        data = await resp.json();
+        if (!resp.ok) {
+          throw new Error(data?.error || 'Backend chat request failed.');
+        }
+      } else {
+        const invoke = await supabase.functions.invoke('medical-chat', {
+          body: {
+            message: text,
+            history: nextHistory.slice(-8).map((m) => ({ role: m.role, text: m.text })),
+            user_id: userId,
+          },
+        });
+        if (invoke.error) throw invoke.error;
+        data = invoke.data;
+      }
 
       const reply = typeof data?.reply === 'string' && data.reply.trim() ? data.reply.trim() : 'Sorry, the server returned an invalid response.';
-      setMessages((prev) => [...prev, { id: `a-${Date.now()}`, role: 'assistant', text: reply }]);
+      const assistantMsg = { id: `a-${Date.now()}`, role: 'assistant' as const, text: reply };
+      setMessages((prev) => [...prev, assistantMsg]);
+      onAppendMessage(assistantMsg);
     } catch (e: any) {
       const detail = String(e?.message || '').trim();
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `a-${Date.now()}`,
-          role: 'assistant',
-          text: detail
-            ? `Connection error: ${detail}`
-            : 'Connection error: check Supabase Function deployment and project keys in .env.',
-        },
-      ]);
+      const errMsg = {
+        id: `a-${Date.now()}`,
+        role: 'assistant' as const,
+        text: detail
+          ? `Connection error: ${detail}`
+          : 'Connection error: check Supabase Function deployment and project keys in .env.',
+      };
+      setMessages((prev) => [...prev, errMsg]);
+      onAppendMessage(errMsg);
     } finally {
       setIsSending(false);
     }
   };
 
   useEffect(() => {
-    const text = initialText.trim();
-    if (!text) return;
-    setInputText(text);
-
-    if (lastAutoSentRef.current === text) return;
-    lastAutoSentRef.current = text;
-    void sendSpecificMessage(text);
+    setInputText(initialText.trim());
   }, [initialText]);
 
   useEffect(() => {
     scrollRef.current?.scrollToEnd({ animated: true });
   }, [messages, isSending]);
 
-  useEffect(() => {
-    const showSub = Keyboard.addListener('keyboardDidShow', (e) => {
-      const h = e?.endCoordinates?.height ?? 0;
-      setKeyboardHeight(h);
-    });
-    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
-      setKeyboardHeight(0);
-    });
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
-
   const sendMessage = async () => {
     await sendSpecificMessage(inputText);
   };
 
   return (
-    <View style={[styles.chatRoot, { paddingBottom: Platform.OS === 'android' ? 10 : 0 }]}>
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      enabled={Platform.OS === 'ios'}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={0}
+    >
+      <View style={[styles.chatRoot, { paddingBottom: 0 }]}>
       <View style={[styles.chatContent, { width: contentWidth }]}>
         <View style={styles.chatTopRow}>
           <Pressable style={styles.chatBackBtn} onPress={onGoHome}>
@@ -144,7 +158,7 @@ export function ChatScreen({ initialText, onGoHome }: { initialText: string; onG
           ) : null}
         </ScrollView>
 
-        <View style={[styles.chatComposer, { marginBottom: keyboardHeight > 0 ? keyboardHeight + 36 : bottomSafe }]}>
+        <View style={[styles.chatComposer, { marginBottom: bottomSafe }]}>
           <TextInput
             value={inputText}
             onChangeText={setInputText}
@@ -159,7 +173,8 @@ export function ChatScreen({ initialText, onGoHome }: { initialText: string; onG
           </Pressable>
         </View>
       </View>
-    </View>
+      </View>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -171,7 +186,7 @@ const styles = StyleSheet.create({
   },
   chatContent: {
     flex: 1,
-    paddingBottom: 4,
+    paddingBottom: 0,
   },
   chatScroll: {
     flex: 1,
@@ -201,7 +216,7 @@ const styles = StyleSheet.create({
     width: 40,
   },
   chatList: {
-    paddingBottom: 10,
+    paddingBottom: 84,
     gap: 10,
   },
   chatBubble: {
@@ -229,7 +244,10 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   chatComposer: {
-    marginTop: 10,
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: Platform.OS === 'android' ? 4 : 0,
     borderRadius: 28,
     borderWidth: 1.2,
     borderColor: '#D4E4F1',
