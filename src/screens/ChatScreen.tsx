@@ -20,6 +20,60 @@ type ChatMsg = {
   text: string;
 };
 
+const TOPIC_KEYWORDS = {
+  diabetes: [
+    'diabetes',
+    'diabtes',
+    'diabetic',
+    'sugar',
+    'blood sugar',
+    'glucose',
+    'insulin',
+    'hba1c',
+  ],
+  migraine: [
+    'migraine',
+    'migrain',
+    'headache',
+    'aura',
+    'photophobia',
+    'light sensitivity',
+    'throbbing',
+  ],
+  gastro: [
+    'gastro',
+    'gastric',
+    'gastritis',
+    'gastroenteritis',
+    'stomach',
+    'abdomen',
+    'abdominal',
+    'acidity',
+    'reflux',
+    'gerd',
+    'heartburn',
+    'constipation',
+    'diarrhea',
+    'vomit',
+    'nausea',
+  ],
+} as const;
+
+function detectAllowedTopic(text: string): 'diabetes' | 'migraine' | 'gastro' | null {
+  const value = String(text || '').toLowerCase();
+  if ((TOPIC_KEYWORDS.diabetes as readonly string[]).some((k) => value.includes(k))) return 'diabetes';
+  if ((TOPIC_KEYWORDS.migraine as readonly string[]).some((k) => value.includes(k))) return 'migraine';
+  if ((TOPIC_KEYWORDS.gastro as readonly string[]).some((k) => value.includes(k))) return 'gastro';
+  return null;
+}
+
+function normalizeTopicTypos(text: string): string {
+  let out = String(text || '');
+  out = out.replace(/\bdiabtes\b/gi, 'diabetes');
+  out = out.replace(/\bmigrain\b/gi, 'migraine');
+  return out;
+}
+
 export function ChatScreen({
   userId,
   sessionMessages,
@@ -37,7 +91,7 @@ export function ChatScreen({
   const { width } = useWindowDimensions();
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 760 : 560, width - 20);
-  const bottomSafe = Platform.OS === 'android' ? 0 : 10;
+  const bottomSafe = Platform.OS === 'android' ? 34 : 10;
   const scrollRef = useRef<ScrollView>(null);
   const [inputText, setInputText] = useState(initialText);
   const [isSending, setIsSending] = useState(false);
@@ -60,14 +114,36 @@ export function ChatScreen({
 
     try {
       setIsSending(true);
+      const topic = detectAllowedTopic(text);
+      if (!topic) {
+        const assistantMsg = {
+          id: `a-${Date.now()}`,
+          role: 'assistant' as const,
+          text:
+            'I can currently assist only with these topics:\n' +
+            '- Diabetes\n' +
+            '- Migraine\n' +
+            '- Gastro (Stomach)\n\n' +
+            'You can ask naturally, for example: "I feel very thirsty and urinate often. Could this be diabetes?"',
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+        onAppendMessage(assistantMsg);
+        return;
+      }
+
+      const normalizedText = normalizeTopicTypos(text);
+      const normalizedHistory = nextHistory
+        .slice(-8)
+        .map((m) => ({ role: m.role, text: m.role === 'user' ? normalizeTopicTypos(m.text) : m.text }));
+
       let data: any = null;
       if (backendApiBase) {
         const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            message: text,
-            history: nextHistory.slice(-8).map((m) => ({ role: m.role, text: m.text })),
+            message: normalizedText,
+            history: normalizedHistory,
             user_id: userId,
           }),
         });
@@ -78,8 +154,8 @@ export function ChatScreen({
       } else {
         const invoke = await supabase.functions.invoke('medical-chat', {
           body: {
-            message: text,
-            history: nextHistory.slice(-8).map((m) => ({ role: m.role, text: m.text })),
+            message: normalizedText,
+            history: normalizedHistory,
             user_id: userId,
           },
         });
@@ -122,7 +198,7 @@ export function ChatScreen({
   return (
     <KeyboardAvoidingView
       style={{ flex: 1 }}
-      enabled={Platform.OS === 'ios'}
+      enabled
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={0}
     >
@@ -216,7 +292,7 @@ const styles = StyleSheet.create({
     width: 40,
   },
   chatList: {
-    paddingBottom: 84,
+    paddingBottom: 12,
     gap: 10,
   },
   chatBubble: {
@@ -244,10 +320,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
   },
   chatComposer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: Platform.OS === 'android' ? 4 : 0,
+    marginTop: 8,
     borderRadius: 28,
     borderWidth: 1.2,
     borderColor: '#D4E4F1',

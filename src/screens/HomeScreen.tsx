@@ -86,7 +86,7 @@ export function HomeScreen({
 
   const contentWidth = Math.min(isDesktop ? 700 : 520, width - 20);
   const topInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) + 8 : 10;
-  const bottomInset = Platform.OS === 'android' ? 8 : 10;
+  const bottomInset = Platform.OS === 'android' ? 34 : 10;
   const headerDrop = isDesktop ? 6 : 10;
   const menuIconSize = isDesktop ? 28 : 30;
   const menuBtnSize = isDesktop ? 42 : 44;
