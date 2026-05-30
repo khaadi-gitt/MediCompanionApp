@@ -1,7 +1,19 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Platform, Pressable, StatusBar as RNStatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Alert, Image, Platform, Pressable, StatusBar as RNStatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
-export function ManageDataScreen({ onBack }: { onBack: () => void }) {
+export function ManageDataScreen({
+  onBack,
+  profilePhotoUrl,
+  onClearChatHistory,
+  onExportData,
+  onDeleteAccountRequest,
+}: {
+  onBack: () => void;
+  profilePhotoUrl?: string;
+  onClearChatHistory?: () => void;
+  onExportData?: () => void;
+  onDeleteAccountRequest?: () => void;
+}) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 620 : 560, width - 20);
@@ -15,22 +27,42 @@ export function ManageDataScreen({ onBack }: { onBack: () => void }) {
             <MaterialCommunityIcons name="arrow-left" size={24} color="#2AAFC0" />
           </Pressable>
           <Text style={styles.title}>Manage Data</Text>
-          <View style={styles.topBtn} />
+          {profilePhotoUrl ? (
+            <Image source={{ uri: profilePhotoUrl }} style={styles.avatar} />
+          ) : (
+            <View style={styles.topBtn}>
+              <MaterialCommunityIcons name="account-outline" size={22} color="#A5B2C1" />
+            </View>
+          )}
         </View>
 
         <View style={styles.card}>
-          <ActionRow icon="history" label="Clear Chat History" />
-          <ActionRow icon="download-outline" label="Export My Data" />
-          <ActionRow icon="delete-outline" label="Delete Account Request" danger />
+          <ActionRow icon="history" label="Clear Chat History" onPress={onClearChatHistory} />
+          <ActionRow icon="download-outline" label="Export My Data" onPress={onExportData} />
+          <ActionRow
+            icon="delete-outline"
+            label="Delete Account Request"
+            danger
+            onPress={() => {
+              Alert.alert(
+                'Delete Account',
+                'Are you sure you want to delete this account?',
+                [
+                  { text: 'No', style: 'cancel' },
+                  { text: 'Yes', style: 'destructive', onPress: onDeleteAccountRequest },
+                ]
+              );
+            }}
+          />
         </View>
       </View>
     </View>
   );
 }
 
-function ActionRow({ icon, label, danger }: { icon: string; label: string; danger?: boolean }) {
+function ActionRow({ icon, label, danger, onPress }: { icon: string; label: string; danger?: boolean; onPress?: () => void }) {
   return (
-    <Pressable style={styles.row}>
+    <Pressable style={styles.row} onPress={onPress}>
       <View style={styles.rowLeft}>
         <MaterialCommunityIcons name={icon as never} size={19} color={danger ? '#E27F73' : '#2CB7C5'} />
         <Text style={[styles.rowText, danger && styles.rowTextDanger]}>{label}</Text>
@@ -53,6 +85,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#D6EAF4',
+  },
+  avatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: '#D6EAF4',
+    backgroundColor: '#EAF7FC',
   },
   title: { fontSize: 15, color: '#2D3F56', fontWeight: '700' },
   card: {

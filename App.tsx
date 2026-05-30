@@ -1,4 +1,7 @@
 import { StatusBar } from 'expo-status-bar';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
 import { Alert, BackHandler, Platform, SafeAreaView, StyleSheet } from 'react-native';
 
@@ -29,6 +32,7 @@ type ProfilePayload = {
   fullName: string;
   email: string;
   photoUrl: string;
+  photoDataUrl?: string;
 };
 
 type AuthUser = {
@@ -42,6 +46,7 @@ type ChatMsg = {
   id: string;
   role: 'user' | 'assistant';
   text: string;
+  confidenceLabel?: 'low' | 'medium' | 'high';
 };
 
 type ChatSession = {
@@ -65,7 +70,7 @@ export default function App() {
     healthTips: true,
     sounds: true,
     language: 'English',
-    textSize: 'Medium',
+    appColor: 'Teal',
   });
   const [profile, setProfile] = useState<ProfilePayload>({
     fullName: 'Sarah Mitchell',
@@ -123,6 +128,8 @@ export default function App() {
         photoUrl: user.photoUrl,
       });
       setScreen('home');
+    } catch (error: any) {
+      Alert.alert('Login failed', String(error?.message || 'Network error. Please try again.'));
     } finally {
       setAuthLoading(false);
     }
@@ -147,6 +154,8 @@ export default function App() {
         return;
       }
       Alert.alert('OTP sent', 'Check your email for the 6-digit OTP.');
+    } catch (error: any) {
+      Alert.alert('Signup failed', String(error?.message || 'Network error. Please try again.'));
     } finally {
       setAuthLoading(false);
     }
@@ -177,6 +186,8 @@ export default function App() {
         photoUrl: user.photoUrl,
       });
       setScreen('home');
+    } catch (error: any) {
+      Alert.alert('OTP verify failed', String(error?.message || 'Network error. Please try again.'));
     } finally {
       setAuthLoading(false);
     }
@@ -200,6 +211,8 @@ export default function App() {
         return;
       }
       Alert.alert('OTP sent', 'Check your email for the reset OTP.');
+    } catch (error: any) {
+      Alert.alert('Reset failed', String(error?.message || 'Network error. Please try again.'));
     } finally {
       setAuthLoading(false);
     }
@@ -224,6 +237,8 @@ export default function App() {
       }
       Alert.alert('Success', 'Password reset successfully. Please login.');
       setScreen('login');
+    } catch (error: any) {
+      Alert.alert('Reset failed', String(error?.message || 'Network error. Please try again.'));
     } finally {
       setAuthLoading(false);
     }
@@ -232,6 +247,75 @@ export default function App() {
   const handleLogout = async () => {
     setCurrentUserId(null);
     setScreen('login');
+  };
+
+  const handleExportChatHistoryPdf = async () => {
+    try {
+      if (!currentSessions.length) {
+        Alert.alert('Export Data', 'No chat history found to export.');
+        return;
+      }
+      const html = buildChatHistoryHtml({
+        userName: profile.fullName,
+        userEmail: profile.email,
+        sessions: currentSessions,
+      });
+      const { uri } = await Print.printToFileAsync({ html });
+      const target = `${(FileSystem.documentDirectory || FileSystem.cacheDirectory || '').replace(/\/+$/, '')}/medicompanion-chat-history.pdf`;
+      if (target) {
+        await FileSystem.copyAsync({ from: uri, to: target });
+      }
+      const finalUri = target || uri;
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(finalUri, { mimeType: 'application/pdf', dialogTitle: 'Export Chat History' });
+      }
+      Alert.alert('Export Data', `Chat history exported successfully.\n\n${finalUri}`);
+    } catch (error: any) {
+      Alert.alert('Export Data Failed', String(error?.message || 'Could not export chat history PDF.'));
+    }
+  };
+
+  const handleDeleteAccountRequest = async () => {
+    try {
+      if (!currentUserId) {
+        Alert.alert('Delete Account', 'Please login first.');
+        return;
+      }
+      if (!backendApiBase) {
+        Alert.alert('Delete Account', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
+        return;
+      }
+
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/account/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: currentUserId }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        Alert.alert('Delete Account Failed', String(data?.error || 'Could not delete account.'));
+        return;
+      }
+
+      const userKey = currentUserId;
+      setChatSessionsByUser((prev) => {
+        const next = { ...prev };
+        delete next[userKey];
+        return next;
+      });
+      setActiveChatSessionByUser((prev) => {
+        const next = { ...prev };
+        delete next[userKey];
+        return next;
+      });
+      setCurrentUserId(null);
+      setProfile({ fullName: '', email: '', photoUrl: '' });
+      setScreen('login');
+      Alert.alert('Delete Account', 'Your account has been deleted successfully.');
+    } catch (error: any) {
+      Alert.alert('Delete Account Failed', String(error?.message || 'Network error.'));
+    }
   };
 
   const historyKey = currentUserId || 'guest';
@@ -326,9 +410,9 @@ export default function App() {
     null;
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: settings.darkMode ? APP_BG_DARK : APP_BG_LIGHT }]}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: settings.darkMode ? APP_BG_DARK : getLightBg(settings.appColor) }]}>
       <StatusBar style={settings.darkMode ? 'light' : 'dark'} />
-      <BackgroundDecor darkMode={settings.darkMode} />
+      <BackgroundDecor darkMode={settings.darkMode} appColor={settings.appColor} />
       {screen === 'splash' ? (
         <SplashScreen />
       ) : screen === 'forgot_password' ? (
@@ -343,9 +427,70 @@ export default function App() {
         <EditProfileScreen
           profile={profile}
           onBack={() => setScreen('profile')}
-          onSave={(next) => {
-            setProfile(next);
-            setScreen('profile');
+          onSave={async (next) => {
+            try {
+              if (!currentUserId) {
+                setProfile(next);
+                setScreen('profile');
+                return;
+              }
+              if (!backendApiBase) {
+                Alert.alert('Profile update failed', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
+                return;
+              }
+
+              let photoDataUrl = '';
+              const photoUrlTrim = String(next.photoUrl || '').trim();
+              const incomingDataUrl = String(next.photoDataUrl || '').trim();
+              if (incomingDataUrl.startsWith('data:image/')) {
+                photoDataUrl = incomingDataUrl;
+              }
+              const isRemotePhoto = /^https?:\/\//i.test(photoUrlTrim);
+              if (!photoDataUrl && photoUrlTrim && !isRemotePhoto) {
+                let sourceUri = photoUrlTrim;
+                if (sourceUri.startsWith('content://')) {
+                  const cacheDir = FileSystem.cacheDirectory || FileSystem.documentDirectory || '';
+                  if (!cacheDir) throw new Error('Local storage not available for image processing.');
+                  const tmpPath = `${cacheDir}profile-${Date.now()}.jpg`;
+                  await FileSystem.copyAsync({ from: sourceUri, to: tmpPath });
+                  sourceUri = tmpPath;
+                }
+                const b64 = await FileSystem.readAsStringAsync(sourceUri, {
+                  encoding: FileSystem.EncodingType.Base64,
+                });
+                if (!b64) {
+                  throw new Error('Could not convert selected image to base64.');
+                }
+                photoDataUrl = `data:image/jpeg;base64,${b64}`;
+              }
+
+              const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/profile/update`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  user_id: currentUserId,
+                  fullName: next.fullName,
+                  email: next.email,
+                  photoUrl: photoDataUrl ? '' : photoUrlTrim,
+                  photoDataUrl,
+                }),
+              });
+              const data = await resp.json();
+              if (!resp.ok) {
+                Alert.alert('Profile update failed', String(data?.error || 'Could not update profile.'));
+                return;
+              }
+
+              const user = normalizeAuthUser(data?.user);
+              setProfile({
+                fullName: user.fullName,
+                email: user.email,
+                photoUrl: user.photoUrl,
+              });
+              setScreen('profile');
+            } catch (error: any) {
+              Alert.alert('Profile update failed', String(error?.message || 'Network error.'));
+            }
           }}
         />
       ) : screen === 'help' ? (
@@ -358,6 +503,7 @@ export default function App() {
             handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
+          profilePhotoUrl={profile.photoUrl}
         />
       ) : screen === 'about' ? (
         <AboutScreen
@@ -369,6 +515,7 @@ export default function App() {
             handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
+          profilePhotoUrl={profile.photoUrl}
         />
       ) : screen === 'disclaimer' ? (
         <DisclaimerScreen
@@ -380,6 +527,7 @@ export default function App() {
             handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
+          profilePhotoUrl={profile.photoUrl}
         />
       ) : screen === 'history' ? (
         <HistoryScreen
@@ -413,29 +561,40 @@ export default function App() {
             handleStartNewChat();
           }}
           onGoUpgrade={() => setScreen('upgrade')}
-          onGoLanguage={() => setScreen('settings_language')}
-          onGoTextSize={() => setScreen('settings_text_size')}
+          onGoAppColor={() => setScreen('settings_text_size')}
           onGoManageData={() => setScreen('settings_manage_data')}
           onGoPrivacyPolicy={() => setScreen('settings_privacy_policy')}
+          profilePhotoUrl={profile.photoUrl}
           settings={settings}
           onChangeSettings={setSettings}
         />
       ) : screen === 'settings_language' ? (
         <LanguageScreen
-          value={settings.language}
+          value={'English'}
           onBack={() => setScreen('settings')}
-          onChange={(language) => setSettings((prev) => ({ ...prev, language }))}
+          onChange={() => setSettings((prev) => ({ ...prev, language: 'English' }))}
+          profilePhotoUrl={profile.photoUrl}
         />
       ) : screen === 'settings_text_size' ? (
         <TextSizeScreen
-          value={settings.textSize}
+          value={settings.appColor}
           onBack={() => setScreen('settings')}
-          onChange={(textSize) => setSettings((prev) => ({ ...prev, textSize }))}
+          onChange={(appColor) => setSettings((prev) => ({ ...prev, appColor }))}
+          profilePhotoUrl={profile.photoUrl}
         />
       ) : screen === 'settings_manage_data' ? (
-        <ManageDataScreen onBack={() => setScreen('settings')} />
+        <ManageDataScreen
+          onBack={() => setScreen('settings')}
+          profilePhotoUrl={profile.photoUrl}
+          onClearChatHistory={() => {
+            handleClearLocalHistory();
+            Alert.alert('Manage Data', 'Chat history cleared.');
+          }}
+          onExportData={handleExportChatHistoryPdf}
+          onDeleteAccountRequest={handleDeleteAccountRequest}
+        />
       ) : screen === 'settings_privacy_policy' ? (
-        <PrivacyPolicyScreen onBack={() => setScreen('settings')} />
+        <PrivacyPolicyScreen onBack={() => setScreen('settings')} profilePhotoUrl={profile.photoUrl} />
       ) : screen === 'profile' ? (
         <ProfileScreen
           profile={profile}
@@ -506,6 +665,74 @@ function createUuid() {
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
+}
+
+function getLightBg(color: AppSettings['appColor']) {
+  if (color === 'Blue') return '#EAF3FF';
+  if (color === 'Orange') return '#FFF2E9';
+  return APP_BG_LIGHT;
+}
+
+function escapeHtml(value: string) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildChatHistoryHtml({
+  userName,
+  userEmail,
+  sessions,
+}: {
+  userName: string;
+  userEmail: string;
+  sessions: ChatSession[];
+}) {
+  const sessionBlocks = sessions
+    .slice()
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .map((session) => {
+      const msgs = (session.messages || [])
+        .map((m) => {
+          const role = m.role === 'user' ? 'User' : 'Assistant';
+          return `<p><strong>${role}:</strong> ${escapeHtml(m.text || '')}</p>`;
+        })
+        .join('');
+      return `
+        <div class="session">
+          <h3>${escapeHtml(session.title || 'Untitled Chat')}</h3>
+          <p class="meta">Updated: ${new Date(session.updatedAt).toLocaleString()}</p>
+          ${msgs || '<p>No messages.</p>'}
+        </div>
+      `;
+    })
+    .join('');
+
+  return `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>MediCompanion Chat History</title>
+        <style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #1f2937; }
+          h1 { margin: 0 0 8px 0; }
+          .meta { color: #6b7280; font-size: 12px; }
+          .session { border: 1px solid #dbe4ef; border-radius: 10px; padding: 12px; margin: 12px 0; }
+          p { line-height: 1.4; margin: 8px 0; }
+        </style>
+      </head>
+      <body>
+        <h1>MediCompanion Export</h1>
+        <p class="meta">User: ${escapeHtml(userName || '-')} (${escapeHtml(userEmail || '-')})</p>
+        <p class="meta">Exported at: ${new Date().toLocaleString()}</p>
+        ${sessionBlocks || '<p>No chat sessions found.</p>'}
+      </body>
+    </html>
+  `;
 }
 
 function getBackTarget(current: Screen): Screen | null {

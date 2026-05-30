@@ -1,7 +1,8 @@
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Platform, Pressable, ScrollView, StatusBar as RNStatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { Image, Platform, Pressable, ScrollView, StatusBar as RNStatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { NavItem } from '../components/NavItem';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export function HelpScreen({
   onBack,
@@ -10,6 +11,7 @@ export function HelpScreen({
   onGoProfile,
   onGoChat,
   onGoUpgrade,
+  profilePhotoUrl,
 }: {
   onBack: () => void;
   onGoHome: () => void;
@@ -17,17 +19,19 @@ export function HelpScreen({
   onGoProfile: () => void;
   onGoChat: () => void;
   onGoUpgrade: () => void;
+  profilePhotoUrl?: string;
 }) {
   const { width } = useWindowDimensions();
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 620 : 560, width - 20);
   const topInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) + 8 : 10;
-  const bottomInset = Platform.OS === 'android' ? 18 : 10;
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 2 : 8);
 
   return (
-    <View style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset }]}> 
+    <View style={[styles.root, { paddingTop: topInset, paddingBottom: 0 }]}> 
       <ScrollView style={{ width: contentWidth }} showsVerticalScrollIndicator={false}>
-        <Top title="Help Center" onBack={onBack} />
+        <Top title="Help Center" onBack={onBack} profilePhotoUrl={profilePhotoUrl} />
         <View style={styles.card}>
           <Item title="How to ask a better question?" body="Write clear symptoms and duration for better response." />
           <Item title="Is this app for diagnosis?" body="No. This app is educational and not a replacement for doctors." />
@@ -48,14 +52,20 @@ export function HelpScreen({
   );
 }
 
-function Top({ title, onBack }: { title: string; onBack: () => void }) {
+function Top({ title, onBack, profilePhotoUrl }: { title: string; onBack: () => void; profilePhotoUrl?: string }) {
   return (
     <View style={styles.topRow}>
       <Pressable style={styles.topBtn} onPress={onBack}>
         <MaterialCommunityIcons name="arrow-left" size={24} color="#2AAFC0" />
       </Pressable>
       <Text style={styles.title}>{title}</Text>
-      <View style={styles.topBtn} />
+      {profilePhotoUrl ? (
+        <Image source={{ uri: profilePhotoUrl }} style={styles.avatar} />
+      ) : (
+        <View style={styles.topBtn}>
+          <MaterialCommunityIcons name="account-outline" size={22} color="#A5B2C1" />
+        </View>
+      )}
     </View>
   );
 }
@@ -111,6 +121,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#D6EAF4',
+  },
+  avatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: '#D6EAF4',
+    backgroundColor: '#EAF7FC',
   },
   title: { fontSize: 22, color: '#2D3F56', fontWeight: '700' },
   card: {

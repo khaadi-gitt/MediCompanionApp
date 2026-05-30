@@ -1,28 +1,29 @@
 {
-  "cli": {
-    "version": ">= 12.0.0"
-  },
-  "build": {
-    "preview": {
-      "developmentClient": false,
-      "distribution": "internal",
-      "env": {
-        "EXPO_PUBLIC_SUPABASE_URL": "https://znaljohzjwszilmxpwei.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_jqv-ba-9hAQsRX9FiuOFvA_YoI6Ttos",
-        "EXPO_PUBLIC_API_BASE_URL": "http://192.168.10.17:5050"
-      },
-      "android": {
-        "buildType": "apk"
-      }
-    },
-    "production": {
-      "env": {
-        "EXPO_PUBLIC_SUPABASE_URL": "https://znaljohzjwszilmxpwei.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "sb_publishable_jqv-ba-9hAQsRX9FiuOFvA_YoI6Ttos"
-      },
-      "android": {
-        "buildType": "app-bundle"
-      }
-    }
-  }
+    "cli":  {
+                "version":  "\u003e= 12.0.0"
+            },
+    "build":  {
+                  "preview":  {
+                                  "developmentClient":  false,
+                                  "distribution":  "internal",
+                                  "env":  {
+                                              "EXPO_PUBLIC_SUPABASE_URL":  "https://znaljohzjwszilmxpwei.supabase.co",
+                                              "EXPO_PUBLIC_SUPABASE_ANON_KEY":  "sb_publishable_jqv-ba-9hAQsRX9FiuOFvA_YoI6Ttos",
+                                              "EXPO_PUBLIC_API_BASE_URL":  "https://darkslategray-wasp-546922.hostingersite.com"
+                                          },
+                                  "android":  {
+                                                  "buildType":  "apk"
+                                              }
+                              },
+                  "production":  {
+                                     "env":  {
+                                                 "EXPO_PUBLIC_SUPABASE_URL":  "https://znaljohzjwszilmxpwei.supabase.co",
+                                                 "EXPO_PUBLIC_SUPABASE_ANON_KEY":  "sb_publishable_jqv-ba-9hAQsRX9FiuOFvA_YoI6Ttos",
+                                                 "EXPO_PUBLIC_API_BASE_URL":  "https://darkslategray-wasp-546922.hostingersite.com"
+                                             },
+                                     "android":  {
+                                                     "buildType":  "app-bundle"
+                                                 }
+                                 }
+              }
 }

@@ -7,6 +7,7 @@ export type ProfilePayload = {
   fullName: string;
   email: string;
   photoUrl: string;
+  photoDataUrl?: string;
 };
 
 export function EditProfileScreen({
@@ -26,6 +27,7 @@ export function EditProfileScreen({
   const [name, setName] = useState(profile.fullName);
   const [email, setEmail] = useState(profile.email);
   const [photo, setPhoto] = useState(profile.photoUrl);
+  const [photoDataUrl, setPhotoDataUrl] = useState(profile.photoDataUrl || '');
 
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -38,9 +40,17 @@ export function EditProfileScreen({
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.8,
+      base64: true,
     });
     if (!result.canceled && result.assets.length > 0) {
-      setPhoto(result.assets[0].uri);
+      const asset: any = result.assets[0];
+      setPhoto(String(asset?.uri || ''));
+      const rawB64 = String(asset?.base64 || '').trim();
+      if (rawB64) {
+        setPhotoDataUrl(`data:image/jpeg;base64,${rawB64}`);
+      } else {
+        setPhotoDataUrl('');
+      }
     }
   };
 
@@ -69,7 +79,15 @@ export function EditProfileScreen({
           <View style={styles.card}>
             <InputRow icon="account-outline" value={name} onChangeText={setName} placeholder="Full Name" />
             <InputRow icon="email-outline" value={email} onChangeText={setEmail} placeholder="Email" />
-            <InputRow icon="image-outline" value={photo} onChangeText={setPhoto} placeholder="Image URL (Optional)" />
+            <InputRow
+              icon="image-outline"
+              value={photo}
+              onChangeText={(v) => {
+                setPhoto(v);
+                setPhotoDataUrl('');
+              }}
+              placeholder="Image URL (Optional)"
+            />
 
             <Pressable style={styles.pickBtn} onPress={pickImage}>
               <MaterialCommunityIcons name="image-plus" size={17} color="#2AB0C0" />
@@ -83,6 +101,7 @@ export function EditProfileScreen({
                   fullName: name.trim() || 'User',
                   email: email.trim(),
                   photoUrl: photo.trim(),
+                  photoDataUrl: photoDataUrl.trim(),
                 })
               }
             >

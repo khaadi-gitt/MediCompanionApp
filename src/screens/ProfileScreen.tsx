@@ -2,6 +2,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { Image, Platform, Pressable, ScrollView, StatusBar as RNStatusBar, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 
 import { NavItem } from '../components/NavItem';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BRAND_ORANGE } from '../theme';
 
 type ProfilePayload = {
@@ -37,13 +38,14 @@ export function ProfileScreen({
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 620 : 560, width - 20);
   const topInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) + 8 : 10;
-  const bottomInset = Platform.OS === 'android' ? 18 : 10;
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 2 : 8);
 
   const displayName = profile.fullName || 'Sarah Mitchell';
   const displayEmail = profile.email || 'sarahmitchell@email.com';
 
   return (
-    <View style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset }]}> 
+    <View style={[styles.root, { paddingTop: topInset, paddingBottom: 0 }]}> 
       <ScrollView style={{ width: contentWidth }} showsVerticalScrollIndicator={false}>
         <View style={styles.headerArea}>
           {profile.photoUrl ? (

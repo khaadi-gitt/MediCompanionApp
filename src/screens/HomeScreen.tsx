@@ -16,6 +16,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 
 import { NavItem } from '../components/NavItem';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export function HomeScreen({
   onGoChat,
@@ -86,7 +87,8 @@ export function HomeScreen({
 
   const contentWidth = Math.min(isDesktop ? 700 : 520, width - 20);
   const topInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) + 8 : 10;
-  const bottomInset = Platform.OS === 'android' ? 34 : 10;
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 2 : 8);
   const headerDrop = isDesktop ? 6 : 10;
   const menuIconSize = isDesktop ? 28 : 30;
   const menuBtnSize = isDesktop ? 42 : 44;
@@ -100,7 +102,7 @@ export function HomeScreen({
   const topicSeeAllSize = isDesktop ? 16 : 13;
 
   return (
-    <View style={[styles.homeRoot, { paddingTop: topInset, paddingBottom: bottomInset }]}> 
+    <View style={[styles.homeRoot, { paddingTop: topInset, paddingBottom: 0 }]}> 
       <ScrollView
         style={[styles.homeContent, { width: contentWidth }]}
         contentContainerStyle={styles.homeContentContainer}
@@ -146,17 +148,74 @@ export function HomeScreen({
         {showMenu ? (
           <View style={styles.headerMenu}>
             <MenuItem icon="home-outline" label="Home" onPress={() => setShowMenu(false)} />
-            <MenuItem icon="account-outline" label="Profile" onPress={onGoProfile} />
-            <MenuItem icon="logout" label="Log Out" onPress={onLogout} />
+            <MenuItem
+              icon="chat-plus-outline"
+              label="New Chat"
+              onPress={() => {
+                setShowMenu(false);
+                onGoChat();
+              }}
+            />
+            <MenuItem
+              icon="history"
+              label="History"
+              onPress={() => {
+                setShowMenu(false);
+                onGoHistory();
+              }}
+            />
+            <MenuItem
+              icon="account-outline"
+              label="Profile"
+              onPress={() => {
+                setShowMenu(false);
+                onGoProfile();
+              }}
+            />
+            <MenuItem
+              icon="cog-outline"
+              label="Settings"
+              onPress={() => {
+                setShowMenu(false);
+                onGoSettings();
+              }}
+            />
+            <MenuItem
+              icon="star-four-points-outline"
+              label="Upgrade Pro"
+              onPress={() => {
+                setShowMenu(false);
+                onGoUpgrade();
+              }}
+            />
+            <MenuItem
+              icon="logout"
+              label="Log Out"
+              onPress={() => {
+                setShowMenu(false);
+                onLogout();
+              }}
+            />
           </View>
         ) : null}
         {showQuick ? (
           <View style={styles.quickMenu}>
-            <MenuItem icon="chat-plus-outline" label="New Chat" onPress={() => onGoChat()} />
-            <MenuItem icon="cog-outline" label="Settings" onPress={onGoSettings} />
-            <MenuItem icon="star-four-points-outline" label="Upgrade Pro" onPress={onGoUpgrade} />
-            <MenuItem icon="help-circle-outline" label="Help" onPress={onGoHelp} />
-            <MenuItem icon="information-outline" label="About" onPress={onGoAbout} />
+            <MenuItem
+              icon="help-circle-outline"
+              label="Help"
+              onPress={() => {
+                setShowQuick(false);
+                onGoHelp();
+              }}
+            />
+            <MenuItem
+              icon="information-outline"
+              label="About"
+              onPress={() => {
+                setShowQuick(false);
+                onGoAbout();
+              }}
+            />
           </View>
         ) : null}
 

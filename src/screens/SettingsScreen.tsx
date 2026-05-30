@@ -1,15 +1,16 @@
-﻿import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { Platform, Pressable, StatusBar as RNStatusBar, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { Image, Platform, Pressable, StatusBar as RNStatusBar, StyleSheet, Switch, Text, useWindowDimensions, View } from 'react-native';
 
 import { NavItem } from '../components/NavItem';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export type AppSettings = {
   darkMode: boolean;
   pushNotifications: boolean;
   healthTips: boolean;
   sounds: boolean;
-  language: 'English' | 'Urdu' | 'Roman Urdu';
-  textSize: 'Small' | 'Medium' | 'Large';
+  language: 'English';
+  appColor: 'Teal' | 'Blue' | 'Orange';
 };
 
 export function SettingsScreen({
@@ -19,10 +20,10 @@ export function SettingsScreen({
   onGoProfile,
   onGoChat,
   onGoUpgrade,
-  onGoLanguage,
-  onGoTextSize,
+  onGoAppColor,
   onGoManageData,
   onGoPrivacyPolicy,
+  profilePhotoUrl,
   settings,
   onChangeSettings,
 }: {
@@ -32,10 +33,10 @@ export function SettingsScreen({
   onGoProfile: () => void;
   onGoChat: () => void;
   onGoUpgrade: () => void;
-  onGoLanguage: () => void;
-  onGoTextSize: () => void;
+  onGoAppColor: () => void;
   onGoManageData: () => void;
   onGoPrivacyPolicy: () => void;
+  profilePhotoUrl?: string;
   settings: AppSettings;
   onChangeSettings: (next: AppSettings) => void;
 }) {
@@ -43,24 +44,29 @@ export function SettingsScreen({
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 620 : 560, width - 20);
   const topInset = Platform.OS === 'android' ? (RNStatusBar.currentHeight ?? 0) + 8 : 10;
-  const bottomInset = Platform.OS === 'android' ? 14 : 8;
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, Platform.OS === 'android' ? 2 : 8);
 
   return (
-    <View style={[styles.root, { paddingTop: topInset, paddingBottom: bottomInset }]}>
+    <View style={[styles.root, { paddingTop: topInset, paddingBottom: 0 }]}>
       <View style={[styles.content, { width: contentWidth }]}>
         <View style={styles.topRow}>
           <Pressable style={styles.topBtn} onPress={onBack}>
             <MaterialCommunityIcons name="arrow-left" size={24} color="#2AAFC0" />
           </Pressable>
           <Text style={styles.title}>Settings</Text>
-          <Pressable style={styles.topBtn}>
-            <MaterialCommunityIcons name="bell-outline" size={22} color="#A5B2C1" />
-          </Pressable>
+          {profilePhotoUrl ? (
+            <Image source={{ uri: profilePhotoUrl }} style={styles.avatar} />
+          ) : (
+            <View style={styles.topBtn}>
+              <MaterialCommunityIcons name="account-outline" size={22} color="#A5B2C1" />
+            </View>
+          )}
         </View>
 
         <Text style={styles.groupLabel}>General</Text>
         <View style={styles.card}>
-          <Row icon="web" label="Language" subtitle={settings.language} rightType="chevron" onPress={onGoLanguage} />
+          <Row icon="web" label="Language" subtitle="English" rightType="none" />
           <Row
             icon="weather-night"
             label="Dark Mode"
@@ -68,7 +74,7 @@ export function SettingsScreen({
             value={settings.darkMode}
             onToggle={(next) => onChangeSettings({ ...settings, darkMode: next })}
           />
-          <Row icon="format-size" label="Text Size" subtitle={settings.textSize} rightType="chevron" onPress={onGoTextSize} />
+          <Row icon="palette-outline" label="App Color" subtitle={settings.appColor} rightType="chevron" onPress={onGoAppColor} />
         </View>
 
         <Text style={styles.groupLabel}>Notifications</Text>
@@ -128,7 +134,7 @@ function Row({
   icon: string;
   label: string;
   subtitle?: string;
-  rightType: 'chevron' | 'switch';
+  rightType: 'chevron' | 'switch' | 'none';
   value?: boolean;
   onToggle?: (next: boolean) => void;
   onPress?: () => void;
@@ -144,14 +150,14 @@ function Row({
       </View>
       {rightType === 'chevron' ? (
         <MaterialCommunityIcons name="chevron-right" size={22} color="#B0BDCC" />
-      ) : (
+      ) : rightType === 'switch' ? (
         <Switch
           value={!!value}
           onValueChange={onToggle}
           trackColor={{ false: '#D6DFEA', true: '#55C3D1' }}
           thumbColor="#FFFFFF"
         />
-      )}
+      ) : null}
     </Pressable>
   );
 }
@@ -179,6 +185,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: '#D6EAF4',
+  },
+  avatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
+    borderColor: '#D6EAF4',
+    backgroundColor: '#EAF7FC',
   },
   title: {
     fontSize: 15,

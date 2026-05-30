@@ -12,11 +12,13 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 type ChatMsg = {
   id: string;
   role: 'user' | 'assistant';
   text: string;
+  confidenceLabel?: 'low' | 'medium' | 'high';
 };
 
 const TOPIC_KEYWORDS = {
@@ -69,9 +71,10 @@ export function ChatScreen({
 }) {
   const backendApiBase = String(process.env.EXPO_PUBLIC_API_BASE_URL || '').trim();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const isDesktop = width >= 900;
   const contentWidth = Math.min(isDesktop ? 760 : 560, width - 20);
-  const bottomSafe = Platform.OS === 'android' ? 34 : 10;
+  const bottomSafe = Math.max(insets.bottom, Platform.OS === 'android' ? 2 : 8);
   const scrollRef = useRef<ScrollView>(null);
   const [inputText, setInputText] = useState(initialText);
   const [isSending, setIsSending] = useState(false);
@@ -118,7 +121,15 @@ export function ChatScreen({
       }
 
       const reply = typeof data?.reply === 'string' && data.reply.trim() ? data.reply.trim() : 'Sorry, the server returned an invalid response.';
-      const assistantMsg = { id: `a-${Date.now()}`, role: 'assistant' as const, text: reply };
+      const incomingLabel = String(data?.confidence_label || '').toLowerCase();
+      const confidenceLabel: ChatMsg['confidenceLabel'] =
+        incomingLabel === 'high' ? 'high' : incomingLabel === 'medium' ? 'medium' : incomingLabel === 'low' ? 'low' : undefined;
+      const assistantMsg = {
+        id: `a-${Date.now()}`,
+        role: 'assistant' as const,
+        text: reply,
+        confidenceLabel,
+      };
       setMessages((prev) => [...prev, assistantMsg]);
       onAppendMessage(assistantMsg);
     } catch (e: any) {
@@ -179,6 +190,11 @@ export function ChatScreen({
               style={[styles.chatBubble, m.role === 'user' ? styles.chatBubbleUser : styles.chatBubbleAssistant]}
             >
               <Text style={m.role === 'user' ? styles.chatTextUser : styles.chatTextAssistant}>{m.text}</Text>
+              {m.role === 'assistant' && m.confidenceLabel ? (
+                <Text style={styles.chatConfidenceText}>
+                  Confidence: {m.confidenceLabel}
+                </Text>
+              ) : null}
             </View>
           ))}
           {isSending ? (
@@ -272,6 +288,12 @@ const styles = StyleSheet.create({
   chatTextAssistant: {
     color: '#2E3C50',
     fontSize: 14,
+  },
+  chatConfidenceText: {
+    marginTop: 6,
+    color: '#6D7B8E',
+    fontSize: 11,
+    fontWeight: '600',
   },
   chatComposer: {
     marginTop: 8,

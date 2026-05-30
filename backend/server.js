@@ -20,6 +20,8 @@ const SMTP_PASS = String(process.env.SMTP_PASS || '').trim();
 const SMTP_FROM = String(process.env.SMTP_FROM || SMTP_USER || '').trim();
 const MIN_TRAINING_EXAMPLES = 8;
 const OTP_EXPIRY_MINUTES = 10;
+const UPLOADS_ROOT = path.join(__dirname, 'uploads');
+const PROFILE_UPLOADS_DIR = path.join(UPLOADS_ROOT, 'profiles');
 
 let mysqlLib = null;
 let mysqlPool = null;
@@ -140,6 +142,31 @@ const server = http.createServer(async (req, res) => {
   }
 
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+  if (req.method === 'GET' && requestUrl.pathname.startsWith('/uploads/')) {
+    const relative = requestUrl.pathname.replace(/^\/+/, '');
+    const candidate = path.normalize(path.join(__dirname, relative));
+    if (!candidate.startsWith(UPLOADS_ROOT)) {
+      json(res, 400, { error: 'Invalid upload path.' });
+      return;
+    }
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      json(res, 404, { error: 'File not found.' });
+      return;
+    }
+    const ext = String(path.extname(candidate) || '').toLowerCase();
+    const type =
+      ext === '.png'
+        ? 'image/png'
+        : ext === '.webp'
+          ? 'image/webp'
+          : ext === '.gif'
+            ? 'image/gif'
+            : 'image/jpeg';
+    res.writeHead(200, { 'Content-Type': type, 'Cache-Control': 'public, max-age=31536000, immutable' });
+    fs.createReadStream(candidate).pipe(res);
+    return;
+  }
 
   if (req.method === 'GET' && requestUrl.pathname === '/health') {
     json(res, 200, { ok: true, service: 'medicompanion-api' });
@@ -363,6 +390,116 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && requestUrl.pathname === '/profile/update') {
+    try {
+      const body = await readJson(req);
+      const userId = sanitizeUuid(body?.user_id);
+      const fullName = String(body?.fullName || '').trim();
+      const email = String(body?.email || '').trim().toLowerCase();
+      const photoUrlInput = String(body?.photoUrl || '').trim();
+      const photoDataUrl = String(body?.photoDataUrl || '').trim();
+
+      if (!userId) {
+        json(res, 400, { error: 'user_id is required.' });
+        return;
+      }
+      if (!fullName || !email || !isValidEmail(email)) {
+        json(res, 400, { error: 'Valid fullName and email are required.' });
+        return;
+      }
+
+      const pool = getMysqlPool();
+      const [existingRows] = await pool.execute('select id from users where email = ? and id <> ? limit 1', [email, userId]);
+      if (Array.isArray(existingRows) && existingRows.length > 0) {
+        json(res, 409, { error: 'Email already used by another account.' });
+        return;
+      }
+
+      let nextPhotoUrl = photoUrlInput;
+      if (photoDataUrl) {
+        nextPhotoUrl = saveProfileImageFromDataUrl({
+          dataUrl: photoDataUrl,
+          userId,
+          baseUrl: getBaseUrl(req),
+        });
+      }
+
+      await pool.execute(
+        `update users
+         set full_name = ?, email = ?, photo_url = ?
+         where id = ?`,
+        [fullName, email, nextPhotoUrl || null, userId]
+      );
+
+      const [rows] = await pool.execute(
+        `select id, full_name, email, photo_url
+         from users
+         where id = ?
+         limit 1`,
+        [userId]
+      );
+      const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+      if (!row) {
+        json(res, 404, { error: 'User not found.' });
+        return;
+      }
+
+      json(res, 200, {
+        ok: true,
+        user: {
+          id: String(row.id),
+          fullName: String(row.full_name || ''),
+          email: String(row.email || ''),
+          photoUrl: String(row.photo_url || ''),
+        },
+      });
+    } catch (error) {
+      json(res, 500, { error: error.message || 'Could not update profile.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && requestUrl.pathname === '/account/delete') {
+    try {
+      const body = await readJson(req);
+      const userId = sanitizeUuid(body?.user_id);
+      if (!userId) {
+        json(res, 400, { error: 'user_id is required.' });
+        return;
+      }
+
+      const pool = getMysqlPool();
+      const [rows] = await pool.execute(
+        `select id, email, photo_url
+         from users
+         where id = ?
+         limit 1`,
+        [userId]
+      );
+      const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+      if (!row) {
+        json(res, 404, { error: 'User not found.' });
+        return;
+      }
+
+      const email = String(row.email || '').trim().toLowerCase();
+      const photoUrl = String(row.photo_url || '').trim();
+
+      await pool.execute('delete from chat_messages where user_id = ?', [userId]);
+      if (email) {
+        await pool.execute('delete from otp_codes where email = ?', [email]);
+      }
+      await pool.execute('delete from users where id = ? limit 1', [userId]);
+      removeLocalProfileFileByUrl(photoUrl);
+      clearUserScreeningState(userId);
+
+      json(res, 200, { ok: true, deleted: true, user_id: userId });
+    } catch (error) {
+      json(res, 500, { error: error.message || 'Could not delete account.' });
+    }
+    return;
+  }
+
   if (req.method === 'GET' && requestUrl.pathname === '/admin/config') {
     if (!isAdmin(req)) {
       json(res, 401, { error: 'Unauthorized admin request.' });
@@ -552,6 +689,7 @@ const server = http.createServer(async (req, res) => {
 
       const migraineScreeningReply = handleMigraineScreening({ sessionId, userId, message });
       if (migraineScreeningReply) {
+        const confidencePercent = computeConfidencePercent(message, migraineScreeningReply);
         if (sessionId) {
           await saveChatMessages({
             sessionId,
@@ -560,12 +698,19 @@ const server = http.createServer(async (req, res) => {
             assistantReply: migraineScreeningReply,
           });
         }
-        json(res, 200, { blocked: false, reply: migraineScreeningReply });
+        json(res, 200, {
+          blocked: false,
+          reply: migraineScreeningReply,
+          confidence_score: confidencePercent,
+          confidence_percent: confidencePercent,
+          confidence_label: confidenceLabelLower(confidencePercent),
+        });
         return;
       }
 
       const gastroScreeningReply = handleGastroScreening({ sessionId, userId, message });
       if (gastroScreeningReply) {
+        const confidencePercent = computeConfidencePercent(message, gastroScreeningReply);
         if (sessionId) {
           await saveChatMessages({
             sessionId,
@@ -574,7 +719,13 @@ const server = http.createServer(async (req, res) => {
             assistantReply: gastroScreeningReply,
           });
         }
-        json(res, 200, { blocked: false, reply: gastroScreeningReply });
+        json(res, 200, {
+          blocked: false,
+          reply: gastroScreeningReply,
+          confidence_score: confidencePercent,
+          confidence_percent: confidencePercent,
+          confidence_label: confidenceLabelLower(confidencePercent),
+        });
         return;
       }
 
@@ -585,6 +736,9 @@ const server = http.createServer(async (req, res) => {
         json(res, 200, {
           blocked: true,
           reply: 'Chat is temporarily disabled. Please ask the admin to enable AI chat.',
+          confidence_score: 0,
+          confidence_percent: 0,
+          confidence_label: 'low',
         });
         return;
       }
@@ -637,7 +791,14 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      json(res, 200, { blocked: false, reply: finalReply2 });
+      const confidencePercent = computeConfidencePercent(message, finalReply2);
+      json(res, 200, {
+        blocked: false,
+        reply: finalReply2,
+        confidence_score: confidencePercent,
+        confidence_percent: confidencePercent,
+        confidence_label: confidenceLabelLower(confidencePercent),
+      });
       return;
     } catch (error) {
       json(res, 500, { error: error.message || 'Unexpected server error' });
@@ -649,6 +810,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  ensureDir(PROFILE_UPLOADS_DIR);
   console.log(`MediCompanion API running on http://localhost:${PORT}`);
 });
 
@@ -687,6 +849,53 @@ function readJson(req) {
   });
 }
 
+function getBaseUrl(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || '').trim() || 'http';
+  const host = String(req.headers.host || '').trim();
+  if (!host) return '';
+  return `${proto}://${host}`;
+}
+
+function ensureDir(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
+function saveProfileImageFromDataUrl({ dataUrl, userId, baseUrl }) {
+  const m = /^data:image\/(png|jpeg|jpg|webp);base64,([a-z0-9+/=\r\n]+)$/i.exec(String(dataUrl || ''));
+  if (!m) throw new Error('Invalid image format. Use PNG/JPEG/WebP base64 data URL.');
+  const type = m[1].toLowerCase() === 'jpg' ? 'jpeg' : m[1].toLowerCase();
+  const b64 = m[2].replace(/\s+/g, '');
+  const buffer = Buffer.from(b64, 'base64');
+  if (!buffer || buffer.length < 10) throw new Error('Invalid image payload.');
+  if (buffer.length > 2 * 1024 * 1024) throw new Error('Image too large. Max 2MB.');
+
+  const ext = type === 'jpeg' ? 'jpg' : type;
+  ensureDir(PROFILE_UPLOADS_DIR);
+  const file = `${userId}-${Date.now()}.${ext}`;
+  const absPath = path.join(PROFILE_UPLOADS_DIR, file);
+  fs.writeFileSync(absPath, buffer);
+  const relUrl = `/uploads/profiles/${file}`;
+  return baseUrl ? `${baseUrl}${relUrl}` : relUrl;
+}
+
+function removeLocalProfileFileByUrl(photoUrl) {
+  const value = String(photoUrl || '').trim();
+  if (!value) return;
+  const marker = '/uploads/profiles/';
+  const idx = value.indexOf(marker);
+  if (idx < 0) return;
+  const rel = value.slice(idx + 1);
+  const abs = path.normalize(path.join(__dirname, rel));
+  if (!abs.startsWith(PROFILE_UPLOADS_DIR)) return;
+  if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
+    try {
+      fs.unlinkSync(abs);
+    } catch {}
+  }
+}
+
 function looksMedical(text) {
   const value = text.toLowerCase();
   return MEDICAL_KEYWORDS.some((k) => value.includes(k));
@@ -695,6 +904,56 @@ function looksMedical(text) {
 function looksAllowedTopic(text) {
   const value = String(text || '').toLowerCase();
   return Object.values(ALLOWED_TOPIC_KEYWORDS).some((items) => items.some((k) => value.includes(k)));
+}
+
+function countTopicHits(text, list) {
+  const value = String(text || '').toLowerCase();
+  if (!value) return 0;
+  let hits = 0;
+  for (const keyword of list || []) {
+    if (value.includes(String(keyword).toLowerCase())) hits += 1;
+  }
+  return hits;
+}
+
+function confidenceLabel(percent) {
+  const p = Number(percent || 0);
+  if (p > 60) return 'High';
+  if (p < 35) return 'Low';
+  return 'Medium';
+}
+
+function confidenceLabelLower(percent) {
+  const label = confidenceLabel(percent);
+  if (label === 'High') return 'high';
+  if (label === 'Medium') return 'medium';
+  return 'low';
+}
+
+function computeConfidencePercent(message, reply) {
+  const migraineHits = countTopicHits(message, ALLOWED_TOPIC_KEYWORDS.migraine || []);
+  const gastroHits = countTopicHits(message, ALLOWED_TOPIC_KEYWORDS.gastro || []);
+  const topHits = Math.max(migraineHits, gastroHits);
+
+  let percent = 40;
+  if (topHits >= 5) percent = 90;
+  else if (topHits === 4) percent = 85;
+  else if (topHits === 3) percent = 78;
+  else if (topHits === 2) percent = 68;
+  else if (topHits === 1) percent = 55;
+
+  const replyText = String(reply || '').toLowerCase();
+  if (replyText.includes('i can currently assist only with these topics')) {
+    percent = Math.min(percent, 40);
+  }
+
+  if (!looksMedical(String(message || ''))) {
+    percent = Math.min(percent, 35);
+  }
+
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  return Math.round(percent);
 }
 
 function handleDiabetesScreening({ sessionId, userId, message }) {
@@ -759,6 +1018,16 @@ function getScreeningKey(sessionId, userId) {
   if (sessionId) return `session:${sessionId}`;
   if (userId) return `user:${userId}`;
   return 'anon:global';
+}
+
+function clearUserScreeningState(userId) {
+  const key = getScreeningKey(null, userId);
+  diabetesScreenSessions.delete(key);
+  diabetesOfferSessions.delete(key);
+  migraineScreenSessions.delete(key);
+  migraineOfferSessions.delete(key);
+  gastroScreenSessions.delete(key);
+  gastroOfferSessions.delete(key);
 }
 
 function parseYesNo(value) {
