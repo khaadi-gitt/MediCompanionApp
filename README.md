@@ -5,13 +5,15 @@ MediCompanion is a mobile-first medical chatbot app with:
 - Local model support via Ollama
 - Topic restriction to 3 domains: Diabetes, Migraine, Gastro (stomach)
 - Session-based chat history (multiple chat sessions)
-- Optional Supabase auth and backend configuration storage
+- MySQL-based signup/login via backend API
+- Email OTP verification for signup and password reset
 
 ## Tech Stack
 
 - Expo + React Native
 - Node.js backend (`backend/server.js`)
-- Supabase (auth + config + optional chat table)
+- MySQL (user auth)
+- MySQL (runtime AI config + chat history)
 - Ollama (local LLM runtime)
 
 ## 1) Prerequisites
@@ -39,8 +41,6 @@ npm install
 Create `./.env`:
 
 ```env
-EXPO_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=sb_publishable_xxxxx
 EXPO_PUBLIC_API_BASE_URL=http://YOUR_PC_LAN_IP:5050
 ```
 
@@ -55,22 +55,34 @@ Create `./backend/.env`:
 
 ```env
 PORT=5050
-SUPABASE_URL=https://YOUR_PROJECT_REF.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=YOUR_SUPABASE_SECRET_KEY
 ADMIN_SECRET=YOUR_STRONG_ADMIN_SECRET
+MYSQL_HOST=YOUR_MYSQL_HOST
+MYSQL_PORT=3306
+MYSQL_USER=YOUR_MYSQL_USER
+MYSQL_PASSWORD=YOUR_MYSQL_PASSWORD
+MYSQL_DATABASE=YOUR_MYSQL_DATABASE
+SMTP_HOST=smtp.hostinger.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=YOUR_BUSINESS_EMAIL
+SMTP_PASS=YOUR_APP_PASSWORD
+SMTP_FROM=YOUR_BUSINESS_EMAIL
 ```
 
-## 4) Supabase SQL Setup
+## 4) SQL Setup (MySQL)
 
-Run these SQL files in Supabase SQL Editor:
+Run this SQL in your MySQL database:
 
-1. `backend/sql/app_config.sql`
-2. `backend/sql/chat_history.sql`
+1. `backend/sql/mysql_auth.sql`
+2. `backend/sql/mysql_runtime.sql`
 
 This creates:
 
+- `users` table
+- `otp_codes` table for signup/reset OTP verification
 - `app_config` table for runtime model/provider settings
-- `chat_messages` table + RLS policies
+- `chat_messages` table
+- `training_examples` table
 
 ## 5) Start Ollama and Download Model
 
@@ -139,7 +151,6 @@ Then:
 ## 9) Chat Behavior Implemented
 
 - Supports only:
-  - Diabetes
   - Migraine
   - Gastro
 - Outside these topics, bot returns allowed-topic message.
@@ -188,14 +199,13 @@ Check:
 
 ### Backend says `app_config row not found`
 
-Run `backend/sql/app_config.sql` in Supabase SQL editor.
+Run `backend/sql/mysql_runtime.sql` in MySQL database.
 
 ### History not visible
 
-Run `backend/sql/chat_history.sql`, then send new messages.
+Run `backend/sql/mysql_runtime.sql`, then send new messages.
 
 ## 12) Security Notes
 
-- Never expose `SUPABASE_SERVICE_ROLE_KEY` in mobile app.
 - Keep backend secrets only in `backend/.env`.
-- If any secret was shared accidentally, rotate it in Supabase immediately.
+- If any secret was shared accidentally, rotate it immediately.

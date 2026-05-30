@@ -1,14 +1,30 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 loadEnvFile(path.join(__dirname, '.env'));
 
 const PORT = Number(process.env.PORT || 5050);
-const SUPABASE_URL = process.env.SUPABASE_URL || '';
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+const MYSQL_HOST = String(process.env.MYSQL_HOST || '').trim();
+const MYSQL_PORT = Number(process.env.MYSQL_PORT || 3306);
+const MYSQL_USER = String(process.env.MYSQL_USER || '').trim();
+const MYSQL_PASSWORD = String(process.env.MYSQL_PASSWORD || '').trim();
+const MYSQL_DATABASE = String(process.env.MYSQL_DATABASE || '').trim();
+const SMTP_HOST = String(process.env.SMTP_HOST || 'smtp.hostinger.com').trim();
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_SECURE = String(process.env.SMTP_SECURE || 'true').trim().toLowerCase() !== 'false';
+const SMTP_USER = String(process.env.SMTP_USER || '').trim();
+const SMTP_PASS = String(process.env.SMTP_PASS || '').trim();
+const SMTP_FROM = String(process.env.SMTP_FROM || SMTP_USER || '').trim();
 const MIN_TRAINING_EXAMPLES = 8;
+const OTP_EXPIRY_MINUTES = 10;
+
+let mysqlLib = null;
+let mysqlPool = null;
+let nodemailerLib = null;
+let smtpTransporter = null;
 
 const MEDICAL_KEYWORDS = [
   'health',
@@ -43,25 +59,17 @@ const MEDICAL_KEYWORDS = [
 ];
 
 const COMMON_SYMPTOMS = [
-  'Diabetes',
   'Migraine',
   'Gastro (Stomach)',
 ];
 
 const ALLOWED_TOPIC_KEYWORDS = {
-  diabetes: [
-    'diabetes',
-    'sugar',
-    'blood sugar',
-    'glucose',
-    'insulin',
-    'hba1c',
-    'hyperglycemia',
-    'hypoglycemia',
-  ],
   migraine: [
     'migraine',
     'headache',
+    'head pain',
+    'head ache',
+    'sir dard',
     'aura',
     'light sensitivity',
     'photophobia',
@@ -135,6 +143,223 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === 'GET' && requestUrl.pathname === '/health') {
     json(res, 200, { ok: true, service: 'medicompanion-api' });
+    return;
+  }
+
+  if (req.method === 'POST' && requestUrl.pathname === '/auth/signup/send-otp') {
+    try {
+      const body = await readJson(req);
+      const fullName = String(body?.fullName || '').trim();
+      const email = String(body?.email || '').trim().toLowerCase();
+      const password = String(body?.password || '');
+      const photoUrl = String(body?.photoUrl || '').trim();
+
+      if (!fullName || !email || !password) {
+        json(res, 400, { error: 'fullName, email, and password are required.' });
+        return;
+      }
+      if (!isValidEmail(email)) {
+        json(res, 400, { error: 'Invalid email format.' });
+        return;
+      }
+      if (password.length < 6) {
+        json(res, 400, { error: 'Password must be at least 6 characters.' });
+        return;
+      }
+
+      const pool = getMysqlPool();
+      const [existingRows] = await pool.execute('select id from users where email = ? limit 1', [email]);
+      if (Array.isArray(existingRows) && existingRows.length > 0) {
+        json(res, 409, { error: 'Email already registered.' });
+        return;
+      }
+
+      const otp = generateOtpCode();
+      const payload = JSON.stringify({
+        fullName,
+        email,
+        passwordHash: hashPassword(password),
+        photoUrl,
+      });
+      await saveOtpCode({ email, purpose: 'signup', otp, payloadJson: payload });
+      await sendOtpEmail({
+        to: email,
+        subject: 'MediCompanion Signup OTP',
+        otp,
+        note: `Use this OTP to complete your signup. It expires in ${OTP_EXPIRY_MINUTES} minutes.`,
+      });
+
+      json(res, 200, { ok: true, message: 'OTP sent to your email.' });
+    } catch (error) {
+      json(res, 500, { error: error.message || 'Could not send signup OTP.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && requestUrl.pathname === '/auth/signup/verify-otp') {
+    try {
+      const body = await readJson(req);
+      const email = String(body?.email || '').trim().toLowerCase();
+      const otp = String(body?.otp || '').trim();
+
+      if (!email || !otp) {
+        json(res, 400, { error: 'email and otp are required.' });
+        return;
+      }
+      const otpRow = await getActiveOtp({ email, purpose: 'signup' });
+      if (!otpRow || !verifyOtpCode(otp, String(otpRow.otp_hash || ''))) {
+        json(res, 401, { error: 'Invalid or expired OTP.' });
+        return;
+      }
+
+      let payload = {};
+      try {
+        payload = JSON.parse(String(otpRow.payload_json || '{}'));
+      } catch {
+        payload = {};
+      }
+
+      const fullName = String(payload?.fullName || '').trim();
+      const passwordHash = String(payload?.passwordHash || '').trim();
+      const photoUrl = String(payload?.photoUrl || '').trim();
+      if (!fullName || !passwordHash) {
+        json(res, 400, { error: 'Signup OTP payload is invalid. Request OTP again.' });
+        return;
+      }
+
+      const userId = crypto.randomUUID();
+      const pool = getMysqlPool();
+      await pool.execute(
+        `insert into users (id, full_name, email, password_hash, photo_url)
+         values (?, ?, ?, ?, ?)`,
+        [userId, fullName, email, passwordHash, photoUrl || null]
+      );
+      await markOtpUsed(Number(otpRow.id));
+
+      json(res, 200, {
+        ok: true,
+        user: {
+          id: userId,
+          fullName,
+          email,
+          photoUrl,
+        },
+      });
+    } catch (error) {
+      if (isMysqlDuplicate(error)) {
+        json(res, 409, { error: 'Email already registered.' });
+        return;
+      }
+      json(res, 500, { error: error.message || 'Signup verification failed.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && requestUrl.pathname === '/auth/login') {
+    try {
+      const body = await readJson(req);
+      const email = String(body?.email || '').trim().toLowerCase();
+      const password = String(body?.password || '');
+
+      if (!email || !password) {
+        json(res, 400, { error: 'email and password are required.' });
+        return;
+      }
+
+      const pool = getMysqlPool();
+      const [rows] = await pool.execute(
+        `select id, full_name, email, password_hash, photo_url
+         from users
+         where email = ?
+         limit 1`,
+        [email]
+      );
+
+      const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+      if (!row || !verifyPassword(password, String(row.password_hash || ''))) {
+        json(res, 401, { error: 'Invalid email or password.' });
+        return;
+      }
+
+      json(res, 200, {
+        ok: true,
+        user: {
+          id: String(row.id),
+          fullName: String(row.full_name || ''),
+          email: String(row.email || ''),
+          photoUrl: String(row.photo_url || ''),
+        },
+      });
+    } catch (error) {
+      json(res, 500, { error: error.message || 'Login failed.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && requestUrl.pathname === '/auth/password/send-otp') {
+    try {
+      const body = await readJson(req);
+      const email = String(body?.email || '').trim().toLowerCase();
+      if (!email || !isValidEmail(email)) {
+        json(res, 400, { error: 'Valid email is required.' });
+        return;
+      }
+
+      const pool = getMysqlPool();
+      const [rows] = await pool.execute('select id from users where email = ? limit 1', [email]);
+      if (!Array.isArray(rows) || rows.length === 0) {
+        // Do not reveal account existence.
+        json(res, 200, { ok: true, message: 'If your account exists, OTP has been sent.' });
+        return;
+      }
+
+      const otp = generateOtpCode();
+      await saveOtpCode({ email, purpose: 'reset', otp, payloadJson: '{}' });
+      await sendOtpEmail({
+        to: email,
+        subject: 'MediCompanion Password Reset OTP',
+        otp,
+        note: `Use this OTP to reset your password. It expires in ${OTP_EXPIRY_MINUTES} minutes.`,
+      });
+      json(res, 200, { ok: true, message: 'OTP sent to your email.' });
+    } catch (error) {
+      json(res, 500, { error: error.message || 'Could not send reset OTP.' });
+    }
+    return;
+  }
+
+  if (req.method === 'POST' && requestUrl.pathname === '/auth/password/reset') {
+    try {
+      const body = await readJson(req);
+      const email = String(body?.email || '').trim().toLowerCase();
+      const otp = String(body?.otp || '').trim();
+      const newPassword = String(body?.newPassword || '');
+      if (!email || !otp || !newPassword) {
+        json(res, 400, { error: 'email, otp, and newPassword are required.' });
+        return;
+      }
+      if (newPassword.length < 6) {
+        json(res, 400, { error: 'Password must be at least 6 characters.' });
+        return;
+      }
+
+      const otpRow = await getActiveOtp({ email, purpose: 'reset' });
+      if (!otpRow || !verifyOtpCode(otp, String(otpRow.otp_hash || ''))) {
+        json(res, 401, { error: 'Invalid or expired OTP.' });
+        return;
+      }
+
+      const pool = getMysqlPool();
+      const [result] = await pool.execute('update users set password_hash = ? where email = ?', [hashPassword(newPassword), email]);
+      if (!result || Number(result.affectedRows || 0) < 1) {
+        json(res, 404, { error: 'Account not found.' });
+        return;
+      }
+      await markOtpUsed(Number(otpRow.id));
+      json(res, 200, { ok: true, message: 'Password updated successfully.' });
+    } catch (error) {
+      json(res, 500, { error: error.message || 'Could not reset password.' });
+    }
     return;
   }
 
@@ -325,20 +550,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const screeningReply = handleDiabetesScreening({ sessionId, userId, message });
-      if (screeningReply) {
-        if (sessionId) {
-          await saveChatMessages({
-            sessionId,
-            userId,
-            userMessage: message,
-            assistantReply: screeningReply,
-          });
-        }
-        json(res, 200, { blocked: false, reply: screeningReply });
-        return;
-      }
-
       const migraineScreeningReply = handleMigraineScreening({ sessionId, userId, message });
       if (migraineScreeningReply) {
         if (sessionId) {
@@ -367,18 +578,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      if (!looksAllowedTopic(message)) {
-        const choices = COMMON_SYMPTOMS.map((x) => `- ${x}`).join('\n');
-        json(res, 200, {
-          blocked: true,
-          reply:
-            'I can currently assist only with these topics:\n' +
-            choices +
-            '\n\nYou can ask naturally, for example: "I feel very thirsty and urinate often. Could this be diabetes?"',
-        });
-        return;
-      }
-
       const runtimeCfg = await getRuntimeConfig();
       const provider = normalizeProvider(runtimeCfg.ai_provider);
 
@@ -394,7 +593,7 @@ const server = http.createServer(async (req, res) => {
         {
           role: 'system',
           content:
-            'You are MediCompanion, a medical education assistant. Reply in English only. You must only answer these topics: Diabetes, Migraine, and Gastrointestinal (stomach) issues. If question is outside these 3 topics, politely refuse and list the 3 supported topics. Keep answers simple, clear, and short. Never provide diagnosis certainty or prescription dosage. If urgent red flags appear, advise immediate doctor/ER visit. Always end with this exact disclaimer: "This information is for educational purposes only and is not a substitute for professional medical advice."',
+            'You are MediCompanion, a medical education assistant. Reply in English only. You must only answer these topics: Migraine and Gastrointestinal (stomach) issues. If question is outside these 2 topics, politely refuse and list the 2 supported topics. Keep answers simple, clear, and short. Never provide diagnosis certainty or prescription dosage. If urgent red flags appear, advise immediate doctor/ER visit. Always end with this exact disclaimer: "This information is for educational purposes only and is not a substitute for professional medical advice."',
         },
         ...history
           .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.text === 'string')
@@ -413,7 +612,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      const finalReply = addDiabetesScreeningOffer({
+      const finalReply = addMigraineScreeningOffer({
         reply,
         message,
         sessionId,
@@ -421,33 +620,24 @@ const server = http.createServer(async (req, res) => {
       });
       const finalReply2 =
         finalReply === reply
-          ? addMigraineScreeningOffer({
-              reply,
-              message,
-              sessionId,
-              userId,
-            })
-          : finalReply;
-      const finalReply3 =
-        finalReply2 === reply
           ? addGastroScreeningOffer({
               reply,
               message,
               sessionId,
               userId,
             })
-          : finalReply2;
+          : finalReply;
 
       if (sessionId) {
         await saveChatMessages({
           sessionId,
           userId,
           userMessage: message,
-          assistantReply: finalReply3,
+          assistantReply: finalReply2,
         });
       }
 
-      json(res, 200, { blocked: false, reply: finalReply3 });
+      json(res, 200, { blocked: false, reply: finalReply2 });
       return;
     } catch (error) {
       json(res, 500, { error: error.message || 'Unexpected server error' });
@@ -665,7 +855,7 @@ function handleMigraineScreening({ sessionId, userId, message }) {
 
   if (['stop', 'cancel', 'exit'].includes(value)) {
     migraineScreenSessions.delete(key);
-    return 'Migraine screening stopped. You can ask about Diabetes, Migraine, or Gastro topics anytime.';
+    return 'Migraine screening stopped. You can ask about Migraine or Gastro topics anytime.';
   }
 
   const answer = parseYesNo(value);
@@ -711,7 +901,7 @@ function handleGastroScreening({ sessionId, userId, message }) {
 
   if (['stop', 'cancel', 'exit'].includes(value)) {
     gastroScreenSessions.delete(key);
-    return 'Gastro screening stopped. You can ask about Diabetes, Migraine, or Gastro topics anytime.';
+    return 'Gastro screening stopped. You can ask about Migraine or Gastro topics anytime.';
   }
 
   const answer = parseYesNo(value);
@@ -851,33 +1041,29 @@ function maskKey(key) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`;
 }
 
-function hasSupabaseConfig() {
-  return Boolean(SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY);
-}
-
 async function getRuntimeConfig() {
-  if (!hasSupabaseConfig()) {
-    throw new Error('SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY missing in backend/.env');
+  const pool = getMysqlPool();
+  const [rows] = await pool.execute(
+    `select id, openai_enabled, openai_model, openai_api_key, ai_provider, local_api_url, local_api_key, updated_at
+     from app_config
+     where id = 1
+     limit 1`
+  );
+  const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  if (!row) {
+    throw new Error('app_config row not found in MySQL. Run backend/sql/mysql_runtime.sql first.');
   }
 
-  const url = `${SUPABASE_URL}/rest/v1/app_config?id=eq.1&select=*`;
-  const resp = await fetch(url, {
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-    },
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Supabase config read failed (${resp.status})`);
-  }
-
-  const rows = await resp.json();
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error('app_config row not found. Run backend/sql/app_config.sql first.');
-  }
-
-  return rows[0];
+  return {
+    id: Number(row.id || 1),
+    openai_enabled: Boolean(Number(row.openai_enabled || 0)),
+    openai_model: String(row.openai_model || 'gpt-4o-mini'),
+    openai_api_key: String(row.openai_api_key || ''),
+    ai_provider: normalizeProvider(row.ai_provider),
+    local_api_url: String(row.local_api_url || 'http://127.0.0.1:11434'),
+    local_api_key: String(row.local_api_key || ''),
+    updated_at: row.updated_at,
+  };
 }
 
 async function updateRuntimeConfig(patch) {
@@ -888,48 +1074,40 @@ async function updateRuntimeConfig(patch) {
     id: 1,
     updated_at: new Date().toISOString(),
   };
-
-  const url = `${SUPABASE_URL}/rest/v1/app_config?on_conflict=id`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      Prefer: 'resolution=merge-duplicates,return=representation',
-    },
-    body: JSON.stringify([next]),
-  });
-
-  if (!resp.ok) {
-    const detail = await resp.text();
-    throw new Error(`Supabase config update failed (${resp.status}) ${detail}`);
-  }
-
-  const rows = await resp.json();
-  return Array.isArray(rows) && rows[0] ? rows[0] : next;
+  const pool = getMysqlPool();
+  await pool.execute(
+    `insert into app_config
+      (id, openai_enabled, openai_model, openai_api_key, ai_provider, local_api_url, local_api_key, updated_at)
+     values (?, ?, ?, ?, ?, ?, ?, now())
+     on duplicate key update
+      openai_enabled = values(openai_enabled),
+      openai_model = values(openai_model),
+      openai_api_key = values(openai_api_key),
+      ai_provider = values(ai_provider),
+      local_api_url = values(local_api_url),
+      local_api_key = values(local_api_key),
+      updated_at = now()`,
+    [
+      1,
+      next.openai_enabled ? 1 : 0,
+      next.openai_model,
+      next.openai_api_key,
+      normalizeProvider(next.ai_provider),
+      next.local_api_url,
+      next.local_api_key,
+    ]
+  );
+  return getRuntimeConfig();
 }
 
 async function getTrainingExamples() {
-  if (!hasSupabaseConfig()) {
-    throw new Error('SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY missing in backend/.env');
-  }
-
-  const url =
-    `${SUPABASE_URL}/rest/v1/training_examples` +
-    `?enabled=eq.true&select=id,system_prompt,user_input,assistant_output&order=id.asc`;
-  const resp = await fetch(url, {
-    headers: {
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-    },
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Could not read training_examples (${resp.status}). Run training_examples.sql first.`);
-  }
-
-  const rows = await resp.json();
+  const pool = getMysqlPool();
+  const [rows] = await pool.execute(
+    `select system_prompt, user_input, assistant_output
+     from training_examples
+     where enabled = 1
+     order by id asc`
+  );
   if (!Array.isArray(rows)) return [];
   return rows
     .filter((x) => x && String(x.user_input || '').trim() && String(x.assistant_output || '').trim())
@@ -1119,39 +1297,146 @@ function sanitizeUuid(value) {
 }
 
 async function saveChatMessages({ sessionId, userId, userMessage, assistantReply }) {
-  if (!hasSupabaseConfig()) return;
-
-  const rows = [
-    {
-      session_id: sessionId,
-      user_id: userId,
-      role: 'user',
-      content: userMessage,
-      created_at: new Date().toISOString(),
-    },
-    {
-      session_id: sessionId,
-      user_id: userId,
-      role: 'assistant',
-      content: assistantReply,
-      created_at: new Date().toISOString(),
-    },
-  ];
-
-  const url = `${SUPABASE_URL}/rest/v1/chat_messages`;
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: SUPABASE_SERVICE_ROLE_KEY,
-      Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-      Prefer: 'return=minimal',
-    },
-    body: JSON.stringify(rows),
-  });
-
-  if (!resp.ok) {
-    const detail = await resp.text();
-    console.error(`chat_messages save failed (${resp.status}) ${detail}`);
+  const pool = getMysqlPool();
+  try {
+    await pool.execute(
+      `insert into chat_messages (session_id, user_id, role, content, created_at)
+       values (?, ?, 'user', ?, now()), (?, ?, 'assistant', ?, now())`,
+      [sessionId, userId, userMessage, sessionId, userId, assistantReply]
+    );
+  } catch (error) {
+    console.error(`chat_messages save failed: ${error?.message || error}`);
   }
+}
+
+function isValidEmail(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
+}
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+
+function verifyPassword(password, encoded) {
+  const parts = String(encoded || '').split(':');
+  if (parts.length !== 2) return false;
+  const [salt, storedHash] = parts;
+  const computedHash = crypto.scryptSync(password, salt, 64).toString('hex');
+  try {
+    return crypto.timingSafeEqual(Buffer.from(storedHash, 'hex'), Buffer.from(computedHash, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+function isMysqlDuplicate(error) {
+  return Number(error?.errno || 0) === 1062;
+}
+
+function getMysqlPool() {
+  if (!MYSQL_HOST || !MYSQL_USER || !MYSQL_DATABASE) {
+    throw new Error('MYSQL_HOST, MYSQL_USER, and MYSQL_DATABASE are required in backend/.env');
+  }
+
+  if (!mysqlLib) {
+    try {
+      mysqlLib = require('mysql2/promise');
+    } catch {
+      throw new Error('mysql2 package is missing. Run: npm install mysql2');
+    }
+  }
+
+  if (!mysqlPool) {
+    mysqlPool = mysqlLib.createPool({
+      host: MYSQL_HOST,
+      port: MYSQL_PORT,
+      user: MYSQL_USER,
+      password: MYSQL_PASSWORD,
+      database: MYSQL_DATABASE,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      charset: 'utf8mb4',
+    });
+  }
+
+  return mysqlPool;
+}
+
+function generateOtpCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+function hashOtpCode(otp) {
+  return crypto.createHash('sha256').update(String(otp)).digest('hex');
+}
+
+function verifyOtpCode(otp, otpHash) {
+  return hashOtpCode(otp) === String(otpHash || '');
+}
+
+async function saveOtpCode({ email, purpose, otp, payloadJson }) {
+  const pool = getMysqlPool();
+  const otpHash = hashOtpCode(otp);
+
+  await pool.execute('delete from otp_codes where email = ? and purpose = ?', [email, purpose]);
+  await pool.execute(
+    `insert into otp_codes (email, purpose, otp_hash, payload_json, expires_at, used)
+     values (?, ?, ?, ?, date_add(now(), interval ? minute), 0)`,
+    [email, purpose, otpHash, payloadJson || '{}', OTP_EXPIRY_MINUTES]
+  );
+}
+
+async function getActiveOtp({ email, purpose }) {
+  const pool = getMysqlPool();
+  const [rows] = await pool.execute(
+    `select id, otp_hash, payload_json
+     from otp_codes
+     where email = ? and purpose = ? and used = 0 and expires_at > now()
+     order by id desc
+     limit 1`,
+    [email, purpose]
+  );
+  return Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+}
+
+async function markOtpUsed(id) {
+  if (!id) return;
+  const pool = getMysqlPool();
+  await pool.execute('update otp_codes set used = 1 where id = ?', [id]);
+}
+
+function getMailer() {
+  if (!SMTP_HOST || !SMTP_USER || !SMTP_PASS || !SMTP_FROM) {
+    throw new Error('SMTP_HOST/SMTP_USER/SMTP_PASS/SMTP_FROM are required in backend/.env');
+  }
+  if (!nodemailerLib) {
+    try {
+      nodemailerLib = require('nodemailer');
+    } catch {
+      throw new Error('nodemailer package is missing. Run: npm install nodemailer');
+    }
+  }
+  if (!smtpTransporter) {
+    smtpTransporter = nodemailerLib.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_SECURE,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+    });
+  }
+  return smtpTransporter;
+}
+
+async function sendOtpEmail({ to, subject, otp, note }) {
+  const mailer = getMailer();
+  await mailer.sendMail({
+    from: SMTP_FROM,
+    to,
+    subject,
+    text: `${note}\n\nYour OTP code is: ${otp}\n\nThis code expires in ${OTP_EXPIRY_MINUTES} minutes.`,
+    html: `<p>${note}</p><p><strong>Your OTP code is: ${otp}</strong></p><p>This code expires in ${OTP_EXPIRY_MINUTES} minutes.</p>`,
+  });
 }

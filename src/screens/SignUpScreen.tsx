@@ -1,4 +1,4 @@
-﻿import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useState } from 'react';
 import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
@@ -9,11 +9,13 @@ import { BRAND_ORANGE } from '../theme';
 
 export function SignUpScreen({
   onGoLogin,
-  onSignUp,
+  onSendOtp,
+  onVerifyOtp,
   loading,
 }: {
   onGoLogin: () => void;
-  onSignUp: (payload: { fullName: string; email: string; password: string; photoUrl: string }) => Promise<void>;
+  onSendOtp: (payload: { fullName: string; email: string; password: string; photoUrl: string }) => Promise<void>;
+  onVerifyOtp: (email: string, otp: string) => Promise<void>;
   loading: boolean;
 }) {
   const [fullName, setFullName] = useState('');
@@ -21,6 +23,8 @@ export function SignUpScreen({
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [photoUrl, setPhotoUrl] = useState('');
+  const [otp, setOtp] = useState('');
+  const [otpSent, setOtpSent] = useState(false);
   const [error, setError] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
@@ -54,7 +58,7 @@ export function SignUpScreen({
     }
   };
 
-  const handleSignUp = async () => {
+  const handleSendOtp = async () => {
     const cleanName = fullName.trim();
     const cleanEmail = email.trim();
 
@@ -74,12 +78,24 @@ export function SignUpScreen({
     }
 
     setError('');
-    await onSignUp({
+    await onSendOtp({
       fullName: cleanName,
       email: cleanEmail,
       password,
       photoUrl: photoUrl.trim(),
     });
+    setOtpSent(true);
+  };
+
+  const handleVerifyOtp = async () => {
+    const cleanEmail = email.trim();
+    const cleanOtp = otp.trim();
+    if (!cleanOtp) {
+      setError('Please enter the OTP from your email.');
+      return;
+    }
+    setError('');
+    await onVerifyOtp(cleanEmail, cleanOtp);
   };
 
   return (
@@ -88,8 +104,8 @@ export function SignUpScreen({
       showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled"
     >
-      <View style={[styles.loginContent, { width: contentWidth }]}>
-        <View style={[styles.topBrand, { marginTop: brandTop }]}>
+      <View style={[styles.loginContent, { width: contentWidth }]}> 
+        <View style={[styles.topBrand, { marginTop: brandTop }]}> 
           <LogoMark size="login" />
           <Text style={styles.tagline}>Create your MediCompanion account</Text>
         </View>
@@ -143,11 +159,32 @@ export function SignUpScreen({
             {photoUrl ? <Image source={{ uri: photoUrl }} style={styles.smallPreview} /> : null}
           </View>
 
+          {otpSent ? (
+            <Field
+              icon={<MaterialCommunityIcons name="shield-key-outline" size={20} color="#A3AABB" />}
+              placeholder="Enter 6-digit OTP"
+              secure={false}
+              value={otp}
+              onChangeText={setOtp}
+            />
+          ) : null}
+
           {error ? <Text style={styles.errorText}>{error}</Text> : null}
 
-          <Pressable style={[styles.loginButton, styles.signupButton, loading && styles.disabledBtn]} onPress={handleSignUp} disabled={loading}>
-            <Text style={styles.loginButtonText}>{loading ? 'Creating...' : 'Sign Up'}</Text>
-          </Pressable>
+          {!otpSent ? (
+            <Pressable style={[styles.loginButton, styles.signupButton, loading && styles.disabledBtn]} onPress={handleSendOtp} disabled={loading}>
+              <Text style={styles.loginButtonText}>{loading ? 'Sending OTP...' : 'Send OTP'}</Text>
+            </Pressable>
+          ) : (
+            <>
+              <Pressable style={[styles.loginButton, styles.signupButton, loading && styles.disabledBtn]} onPress={handleVerifyOtp} disabled={loading}>
+                <Text style={styles.loginButtonText}>{loading ? 'Verifying...' : 'Verify OTP & Sign Up'}</Text>
+              </Pressable>
+              <Pressable style={styles.resendBtn} onPress={handleSendOtp} disabled={loading}>
+                <Text style={styles.resendText}>Resend OTP</Text>
+              </Pressable>
+            </>
+          )}
         </View>
 
         <Text style={styles.signupText}>
@@ -259,6 +296,16 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     lineHeight: 22,
+  },
+  resendBtn: {
+    alignSelf: 'center',
+    marginTop: 10,
+    paddingVertical: 4,
+  },
+  resendText: {
+    color: '#2AAFC0',
+    fontWeight: '600',
+    fontSize: 13,
   },
   signupText: {
     marginTop: 14,

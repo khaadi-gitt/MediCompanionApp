@@ -12,7 +12,6 @@ import {
   useWindowDimensions,
   View,
 } from 'react-native';
-import { supabase } from '../lib/supabase';
 
 type ChatMsg = {
   id: string;
@@ -21,16 +20,6 @@ type ChatMsg = {
 };
 
 const TOPIC_KEYWORDS = {
-  diabetes: [
-    'diabetes',
-    'diabtes',
-    'diabetic',
-    'sugar',
-    'blood sugar',
-    'glucose',
-    'insulin',
-    'hba1c',
-  ],
   migraine: [
     'migraine',
     'migrain',
@@ -59,17 +48,8 @@ const TOPIC_KEYWORDS = {
   ],
 } as const;
 
-function detectAllowedTopic(text: string): 'diabetes' | 'migraine' | 'gastro' | null {
-  const value = String(text || '').toLowerCase();
-  if ((TOPIC_KEYWORDS.diabetes as readonly string[]).some((k) => value.includes(k))) return 'diabetes';
-  if ((TOPIC_KEYWORDS.migraine as readonly string[]).some((k) => value.includes(k))) return 'migraine';
-  if ((TOPIC_KEYWORDS.gastro as readonly string[]).some((k) => value.includes(k))) return 'gastro';
-  return null;
-}
-
 function normalizeTopicTypos(text: string): string {
   let out = String(text || '');
-  out = out.replace(/\bdiabtes\b/gi, 'diabetes');
   out = out.replace(/\bmigrain\b/gi, 'migraine');
   return out;
 }
@@ -114,53 +94,27 @@ export function ChatScreen({
 
     try {
       setIsSending(true);
-      const topic = detectAllowedTopic(text);
-      if (!topic) {
-        const assistantMsg = {
-          id: `a-${Date.now()}`,
-          role: 'assistant' as const,
-          text:
-            'I can currently assist only with these topics:\n' +
-            '- Diabetes\n' +
-            '- Migraine\n' +
-            '- Gastro (Stomach)\n\n' +
-            'You can ask naturally, for example: "I feel very thirsty and urinate often. Could this be diabetes?"',
-        };
-        setMessages((prev) => [...prev, assistantMsg]);
-        onAppendMessage(assistantMsg);
-        return;
-      }
-
       const normalizedText = normalizeTopicTypos(text);
       const normalizedHistory = nextHistory
         .slice(-8)
         .map((m) => ({ role: m.role, text: m.role === 'user' ? normalizeTopicTypos(m.text) : m.text }));
 
-      let data: any = null;
-      if (backendApiBase) {
-        const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: normalizedText,
-            history: normalizedHistory,
-            user_id: userId,
-          }),
-        });
-        data = await resp.json();
-        if (!resp.ok) {
-          throw new Error(data?.error || 'Backend chat request failed.');
-        }
-      } else {
-        const invoke = await supabase.functions.invoke('medical-chat', {
-          body: {
-            message: normalizedText,
-            history: normalizedHistory,
-            user_id: userId,
-          },
-        });
-        if (invoke.error) throw invoke.error;
-        data = invoke.data;
+      if (!backendApiBase) {
+        throw new Error('EXPO_PUBLIC_API_BASE_URL is missing in .env');
+      }
+
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: normalizedText,
+          history: normalizedHistory,
+          user_id: userId,
+        }),
+      });
+      const data: any = await resp.json();
+      if (!resp.ok) {
+        throw new Error(data?.error || 'Backend chat request failed.');
       }
 
       const reply = typeof data?.reply === 'string' && data.reply.trim() ? data.reply.trim() : 'Sorry, the server returned an invalid response.';

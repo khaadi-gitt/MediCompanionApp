@@ -1,10 +1,8 @@
-import type { User } from '@supabase/supabase-js';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
 import { Alert, BackHandler, Platform, SafeAreaView, StyleSheet } from 'react-native';
 
 import { BackgroundDecor } from './src/components/BackgroundDecor';
-import { supabase } from './src/lib/supabase';
 import { AboutScreen } from './src/screens/AboutScreen';
 import { ChatScreen } from './src/screens/ChatScreen';
 import { DisclaimerScreen } from './src/screens/DisclaimerScreen';
@@ -33,6 +31,13 @@ type ProfilePayload = {
   photoUrl: string;
 };
 
+type AuthUser = {
+  id: string;
+  fullName: string;
+  email: string;
+  photoUrl: string;
+};
+
 type ChatMsg = {
   id: string;
   role: 'user' | 'assistant';
@@ -47,6 +52,7 @@ type ChatSession = {
 };
 
 export default function App() {
+  const backendApiBase = String(process.env.EXPO_PUBLIC_API_BASE_URL || '').trim();
   const [screen, setScreen] = useState<Screen>('splash');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [chatPrefill, setChatPrefill] = useState('');
@@ -68,39 +74,12 @@ export default function App() {
   });
 
   useEffect(() => {
-    let isMounted = true;
-    const timer = setTimeout(async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!isMounted) return;
-
-      const user = data.session?.user ?? null;
-      if (user) {
-        setCurrentUserId(user.id);
-        setProfile(getProfileFromUser(user));
-        setScreen('home');
-      } else {
-        setCurrentUserId(null);
-        setScreen('login');
-      }
+    const timer = setTimeout(() => {
+      setCurrentUserId(null);
+      setScreen('login');
     }, 1100);
 
-    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!isMounted) return;
-
-      const user = session?.user ?? null;
-      if (user) {
-        setCurrentUserId(user.id);
-        setProfile(getProfileFromUser(user));
-      } else {
-        setCurrentUserId(null);
-      }
-    });
-
-    return () => {
-      isMounted = false;
-      clearTimeout(timer);
-      subscription.subscription.unsubscribe();
-    };
+    return () => clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -120,66 +99,137 @@ export default function App() {
   const handleLogin = async (email: string, password: string) => {
     try {
       setAuthLoading(true);
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) {
-        Alert.alert('Login failed', error.message);
+      if (!backendApiBase) {
+        Alert.alert('Login failed', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
         return;
       }
 
-      if (data.user) {
-        setCurrentUserId(data.user.id);
-        setProfile(getProfileFromUser(data.user));
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        Alert.alert('Login failed', String(data?.error || 'Invalid email or password.'));
+        return;
       }
+
+      const user = normalizeAuthUser(data?.user);
+      setCurrentUserId(user.id);
+      setProfile({
+        fullName: user.fullName,
+        email: user.email,
+        photoUrl: user.photoUrl,
+      });
       setScreen('home');
     } finally {
       setAuthLoading(false);
     }
   };
 
-  const handleSignUp = async (payload: { fullName: string; email: string; password: string; photoUrl: string }) => {
+  const handleSignUpSendOtp = async (payload: { fullName: string; email: string; password: string; photoUrl: string }) => {
     try {
       setAuthLoading(true);
-      const { data, error } = await supabase.auth.signUp({
-        email: payload.email,
-        password: payload.password,
-        options: {
-          data: {
-            full_name: payload.fullName,
-            photo_url: payload.photoUrl,
-          },
-        },
-      });
-
-      if (error) {
-        Alert.alert('Signup failed', error.message);
+      if (!backendApiBase) {
+        Alert.alert('Signup failed', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
         return;
       }
 
-      const user = data.user;
-      const session = data.session;
-
-      if (user) {
-        setCurrentUserId(user.id);
-        setProfile({
-          fullName: payload.fullName,
-          email: payload.email,
-          photoUrl: payload.photoUrl,
-        });
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/auth/signup/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        Alert.alert('Signup failed', String(data?.error || 'Could not send OTP.'));
+        return;
       }
+      Alert.alert('OTP sent', 'Check your email for the 6-digit OTP.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
 
-      if (session) {
-        setScreen('home');
-      } else {
-        Alert.alert('Signup successful', 'Account created. Email confirmation may be required before login.');
-        setScreen('login');
+  const handleSignUpVerifyOtp = async (email: string, otp: string) => {
+    try {
+      setAuthLoading(true);
+      if (!backendApiBase) {
+        Alert.alert('Signup failed', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
+        return;
       }
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/auth/signup/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, otp }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        Alert.alert('OTP verify failed', String(data?.error || 'Invalid OTP.'));
+        return;
+      }
+      const user = normalizeAuthUser(data?.user);
+      setCurrentUserId(user.id);
+      setProfile({
+        fullName: user.fullName,
+        email: user.email,
+        photoUrl: user.photoUrl,
+      });
+      setScreen('home');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handlePasswordResetSendOtp = async (email: string) => {
+    try {
+      setAuthLoading(true);
+      if (!backendApiBase) {
+        Alert.alert('Reset failed', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
+        return;
+      }
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/auth/password/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        Alert.alert('Reset failed', String(data?.error || 'Could not send OTP.'));
+        return;
+      }
+      Alert.alert('OTP sent', 'Check your email for the reset OTP.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handlePasswordResetConfirm = async (payload: { email: string; otp: string; newPassword: string }) => {
+    try {
+      setAuthLoading(true);
+      if (!backendApiBase) {
+        Alert.alert('Reset failed', 'EXPO_PUBLIC_API_BASE_URL is missing in .env');
+        return;
+      }
+      const resp = await fetch(`${backendApiBase.replace(/\/+$/, '')}/auth/password/reset`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        Alert.alert('Reset failed', String(data?.error || 'Could not reset password.'));
+        return;
+      }
+      Alert.alert('Success', 'Password reset successfully. Please login.');
+      setScreen('login');
     } finally {
       setAuthLoading(false);
     }
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
     setCurrentUserId(null);
     setScreen('login');
   };
@@ -282,7 +332,13 @@ export default function App() {
       {screen === 'splash' ? (
         <SplashScreen />
       ) : screen === 'forgot_password' ? (
-        <ForgotPasswordScreen onGoBack={() => setScreen('login')} onGoLogin={() => setScreen('login')} />
+        <ForgotPasswordScreen
+          onGoBack={() => setScreen('login')}
+          onGoLogin={() => setScreen('login')}
+          onSendOtp={handlePasswordResetSendOtp}
+          onResetPassword={handlePasswordResetConfirm}
+          loading={authLoading}
+        />
       ) : screen === 'edit_profile' ? (
         <EditProfileScreen
           profile={profile}
@@ -435,7 +491,8 @@ export default function App() {
       ) : (
         <SignUpScreen
           onGoLogin={() => setScreen('login')}
-          onSignUp={handleSignUp}
+          onSendOtp={handleSignUpSendOtp}
+          onVerifyOtp={handleSignUpVerifyOtp}
           loading={authLoading}
         />
       )}
@@ -481,14 +538,15 @@ function getBackTarget(current: Screen): Screen | null {
   }
 }
 
-function getProfileFromUser(user: User): ProfilePayload {
-  const fullName =
-    String(user.user_metadata?.full_name || user.user_metadata?.name || '').trim() || 'MediCompanion User';
-  const photoUrl = String(user.user_metadata?.photo_url || '').trim();
-
+function normalizeAuthUser(input: any): AuthUser {
+  const id = String(input?.id || '').trim() || createUuid();
+  const fullName = String(input?.fullName || '').trim() || 'MediCompanion User';
+  const email = String(input?.email || '').trim();
+  const photoUrl = String(input?.photoUrl || '').trim();
   return {
+    id,
     fullName,
-    email: user.email || '',
+    email,
     photoUrl,
   };
 }
